@@ -7,7 +7,7 @@ const SCROLL_IDLE_MS = 700;
 export default function ScrollbarVisibilityController() {
   useEffect(() => {
     const root = document.documentElement;
-    let hideTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let hideTimer: number | null = null;
 
     const showWhileScrolling = () => {
       root.classList.add("is-scrolling");

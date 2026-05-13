@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 
 export const maxDuration = 120;
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
@@ -63,12 +63,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "缺少 questionText" }, { status: 400 });
   }
 
-  const hasText =
-    typeof answerText === "string" && answerText.trim().length > 0;
+  const normalizedAnswerText =
+    typeof answerText === "string" ? answerText.trim() : "";
+  const normalizedAnswerImageBase64 =
+    typeof answerImageBase64 === "string" ? answerImageBase64 : "";
+  const normalizedAnswerImageMimeType =
+    typeof answerImageMimeType === "string" ? answerImageMimeType : "";
+
+  const hasText = normalizedAnswerText.length > 0;
   const hasImage =
-    typeof answerImageBase64 === "string" &&
-    answerImageBase64.length > 0 &&
-    typeof answerImageMimeType === "string";
+    normalizedAnswerImageBase64.length > 0 &&
+    normalizedAnswerImageMimeType.length > 0;
 
   if (!hasText && !hasImage) {
     return NextResponse.json(
@@ -80,11 +85,11 @@ export async function POST(request: NextRequest) {
   const modelName = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
   const genAI = new GoogleGenerativeAI(apiKey);
 
-  const meta = [];
+  const meta: string[] = [];
   if (subject) meta.push(`科目：${subject}`);
   if (year != null) meta.push(`年份：${year}`);
 
-  const userParts = [];
+  const userParts: Part[] = [];
 
   userParts.push({
     text: `${ANALYSIS_SCHEMA_PROMPT}
@@ -98,15 +103,15 @@ ${questionText}
 
   if (hasText) {
     userParts.push({
-      text: `【考生文字答案】\n${answerText.trim()}`,
+      text: `【考生文字答案】\n${normalizedAnswerText}`,
     });
   }
 
   if (hasImage) {
     userParts.push({
       inlineData: {
-        mimeType: answerImageMimeType,
-        data: answerImageBase64,
+        mimeType: normalizedAnswerImageMimeType,
+        data: normalizedAnswerImageBase64,
       },
     });
     userParts.push({
