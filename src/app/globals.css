@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+.font-serif {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+/* Global scrollbar styling */
+:root {
+  --scrollbar-size: 5px;
+  --scrollbar-thumb: #b7a38f;
+  --viewport-scrollbar-inset: 8px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html {
+  overflow-y: auto;
+}
+
+*::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-track-piece {
+  background: transparent;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  -webkit-appearance: none;
+  background-color: transparent;
+  border-radius: 9999px;
+  border: 0;
+  min-height: 64px;
+  min-width: 64px;
+  transition: background-color 140ms ease;
+}
+
+*::-webkit-scrollbar-thumb:vertical {
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:horizontal {
+  border-radius: 9999px;
+}
+
+:root.is-scrolling *::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-button:single-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Use body as viewport scroller so scrollbar is inset from window edge */
+body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-right: 0;
+}
+
+@media (min-width: 768px) {
+  html {
+    overflow: hidden;
+  }
+
+  body {
+    margin-right: var(--viewport-scrollbar-inset);
+  }
+}
