@@ -35,6 +35,7 @@ export function EditQuestionModal({
   const [error, setError] = useState<string | null>(null);
 
   if (!open || !question || typeof window === "undefined") return null;
+  const activeQuestion = question;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,13 +46,13 @@ export function EditQuestionModal({
     }
     setBusy(true);
     try {
-      const response = await fetch(`/api/questions/${question.id}`, {
+      const response = await fetch(`/api/questions/${activeQuestion.id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          newId: questionId.trim() || question.id,
+          newId: questionId.trim() || activeQuestion.id,
           subject: subject.trim(),
           year: Number(year) || new Date().getFullYear(),
           score: Number(score) > 0 ? Number(score) : 100,
@@ -151,7 +152,7 @@ export function EditQuestionModal({
             <button
               type="button"
               onClick={() => {
-                onDelete(question.id);
+                onDelete(activeQuestion.id);
                 onClose();
               }}
               className="mr-auto rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
