@@ -16,6 +16,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Knot",
   description: "申論練習、AI 批改與字卡 — Next.js + Firebase + Gemini",
+  icons: {
+    icon: "/K_logo_wh.png",
+    shortcut: "/K_logo_wh.png",
+    apple: "/K_logo_wh.png",
+  },
 };
 
 export default function RootLayout({

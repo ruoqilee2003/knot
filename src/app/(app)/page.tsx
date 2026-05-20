@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AddQuestionModal } from "@/components/AddQuestionModal";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { EditQuestionModal } from "@/components/EditQuestionModal";
 
 type Row = {
   id: string;
   subject: string;
   year: number;
+  score: number;
   questionText: string;
   imageUrl: string | null;
   createdAt: unknown;
@@ -18,6 +20,7 @@ export default function HallPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<Row | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState("all");
@@ -38,6 +41,7 @@ export default function HallPage() {
         id: String(d.id ?? ""),
         subject: String(d.subject ?? ""),
         year: Number(d.year ?? 0),
+        score: Number(d.score ?? 100),
         questionText: String(d.questionText ?? d.title ?? ""),
         imageUrl: d.imageUrl ? String(d.imageUrl) : null,
         createdAt: d.createdAt ?? null,
@@ -122,6 +126,14 @@ export default function HallPage() {
         onClose={() => setModalOpen(false)}
         onCreated={() => void load()}
       />
+      <EditQuestionModal
+        key={editTarget?.id ?? "edit-none"}
+        open={Boolean(editTarget)}
+        question={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={() => void load()}
+        onDelete={(id) => setDeleteTargetId(id)}
+      />
       <ConfirmDeleteDialog
         open={Boolean(deleteTargetId)}
         title="刪除題目"
@@ -189,6 +201,9 @@ export default function HallPage() {
                       {r.subject || "未分類"}
                     </span>
                     <span>{r.year || "—"} 年</span>
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800">
+                      {r.score || 0} 分
+                    </span>
                     {r.imageUrl && (
                       <span className="text-stone-400">含題目附圖</span>
                     )}
@@ -200,13 +215,15 @@ export default function HallPage() {
                     進入作答 →
                   </span>
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => setDeleteTargetId(r.id)}
-                  className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
-                >
-                  刪除
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditTarget(r)}
+                    className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50"
+                  >
+                    編輯
+                  </button>
+                </div>
               </div>
             </div>
           </li>

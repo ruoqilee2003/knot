@@ -9,6 +9,7 @@ type NoteBody = {
   body?: string;
   questionId?: string;
   subject?: string;
+  score?: number;
 };
 
 function makeNoteTitleFromQuestion(questionText: string): string {
@@ -58,10 +59,18 @@ export async function POST(request: Request) {
 
   try {
     const questionSnap = await adminDb.collection("questions").doc(questionId).get();
-    const questionData = questionSnap.data() as { questionText?: string; title?: string } | undefined;
+    const questionData = questionSnap.data() as
+      | { questionText?: string; title?: string; score?: number }
+      | undefined;
     const sourceText = String(
       questionData?.questionText ?? questionData?.title ?? body.title ?? ""
     );
+    const score =
+      typeof questionData?.score === "number" && Number.isFinite(questionData.score)
+        ? questionData.score
+        : typeof body.score === "number" && Number.isFinite(body.score)
+          ? body.score
+          : null;
     const title = makeNoteTitleFromQuestion(sourceText);
 
     const existingSnapshot = await adminDb
@@ -75,7 +84,7 @@ export async function POST(request: Request) {
     });
 
     if (duplicate) {
-      await duplicate.ref.set({ title, subject }, { merge: true });
+      await duplicate.ref.set({ title, subject, score }, { merge: true });
       return NextResponse.json(
         { id: duplicate.id, deduped: true, message: "Note already exists" },
         { status: 200 }
@@ -87,6 +96,7 @@ export async function POST(request: Request) {
       body: noteBody,
       questionId,
       subject,
+      score,
       createdAt: FieldValue.serverTimestamp(),
     });
     return NextResponse.json({ id: ref.id, deduped: false }, { status: 201 });

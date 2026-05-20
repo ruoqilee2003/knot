@@ -5,10 +5,12 @@ import { adminDb } from "@/lib/firebase-admin";
 export const runtime = "nodejs";
 
 type QuestionBody = {
+  questionId?: string;
   questionText?: string;
   title?: string;
   subject?: string;
   year?: number;
+  score?: number;
   imageUrl?: string | null;
 };
 
@@ -43,12 +45,18 @@ export async function POST(request: Request) {
 
   const questionText =
     typeof body.questionText === "string" ? body.questionText.trim() : "";
+  const questionId =
+    typeof body.questionId === "string" ? body.questionId.trim() : "";
   const title = typeof body.title === "string" ? body.title.trim() : "";
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
   const year =
     typeof body.year === "number" && Number.isFinite(body.year)
       ? body.year
       : new Date().getFullYear();
+  const score =
+    typeof body.score === "number" && Number.isFinite(body.score) && body.score > 0
+      ? body.score
+      : 100;
   const imageUrl =
     typeof body.imageUrl === "string" && body.imageUrl.trim().length > 0
       ? body.imageUrl.trim()
@@ -63,14 +71,27 @@ export async function POST(request: Request) {
 
   try {
     const normalizedQuestionText = questionText || title;
-    const ref = await adminDb.collection("questions").add({
+    const payload = {
       title: title || normalizedQuestionText,
       subject,
       year,
+      score,
       questionText: normalizedQuestionText,
       imageUrl,
       createdAt: FieldValue.serverTimestamp(),
-    });
+    };
+
+    if (questionId) {
+      const targetRef = adminDb.collection("questions").doc(questionId);
+      const existing = await targetRef.get();
+      if (existing.exists) {
+        return NextResponse.json({ error: "題目 ID 已存在" }, { status: 409 });
+      }
+      await targetRef.set(payload);
+      return NextResponse.json({ id: targetRef.id }, { status: 201 });
+    }
+
+    const ref = await adminDb.collection("questions").add(payload);
 
     return NextResponse.json({ id: ref.id }, { status: 201 });
   } catch (error) {

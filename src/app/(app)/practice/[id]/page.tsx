@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useParams } from "next/navigation";
@@ -33,6 +33,21 @@ function makeNoteTitleFromQuestion(questionText: string): string {
   return normalized.length > 28 ? `${normalized.slice(0, 28)}...` : normalized;
 }
 
+function formatDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function countWithoutWhitespace(text: string): number {
+  return text.replace(/\s/g, "").length;
+}
+
 async function fileToBase64(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -59,6 +74,11 @@ export default function PracticePage() {
   const [flashBusy, setFlashBusy] = useState(false);
   const [noteBusy, setNoteBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [selectedWordCount, setSelectedWordCount] = useState(0);
+  const answerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const busyMessage = "系統忙碌中，請再試一次";
 
   useEffect(() => {
     if (!answerFile) {
@@ -149,6 +169,14 @@ export default function PracticePage() {
     };
   }, [id]);
 
+  useEffect(() => {
+    if (!timerRunning) return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [timerRunning]);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3200);
@@ -202,7 +230,7 @@ export default function PracticePage() {
       });
 
       setDraftSavedAt(new Date().toLocaleString());
-      showToast("草稿已儲存（本機 + Firestore）");
+      showToast("草稿已儲存");
     } catch (e) {
       setApiError(
         e instanceof Error
@@ -245,7 +273,13 @@ export default function PracticePage() {
       });
       const data = (await res.json()) as AnalysisResult & { error?: string };
       if (!res.ok) {
-        throw new Error(data.error || "批改請求失敗");
+        const errorMessage = data.error || "批改請求失敗";
+        const isHighDemand =
+          res.status === 503 || errorMessage.toLowerCase().includes("high demand");
+        if (isHighDemand) {
+          throw new Error(busyMessage);
+        }
+        throw new Error(errorMessage);
       }
       setAnalysis(data);
       localStorage.setItem(
@@ -323,10 +357,17 @@ export default function PracticePage() {
     if (!analysis || !question || !id) return;
     setNoteBusy(true);
     try {
+      const normalizedAnswer = answerText.trim();
+      const rawAnswerSection = normalizedAnswer
+        ? normalizedAnswer
+        : answerPreview
+          ? "（本次作答未輸入文字，請參考上傳圖片作答）"
+          : "（本次未填寫文字作答）";
       const body = [
         `【考題考點】\n- ${analysis.examKeyPoints.join("\n- ")}`,
         `【答案評語】\n${analysis.answerFeedback}`,
         `【補強建議】\n${analysis.improvementSuggestions}`,
+        `【原始作答】\n${rawAnswerSection}`,
         `【複習字卡】\n${analysis.flashcards
           .map((card, idx) => `${idx + 1}. Q: ${card.front}\n   A: ${card.back}`)
           .join("\n")}`,
@@ -353,7 +394,18 @@ export default function PracticePage() {
     } finally {
       setNoteBusy(false);
     }
-  }, [analysis, question, id]);
+  }, [analysis, question, id, answerText, answerPreview]);
+
+  const answerWordCount = countWithoutWhitespace(answerText);
+  const updateSelectedWordCount = useCallback(() => {
+    const textarea = answerTextareaRef.current;
+    if (!textarea) return;
+    const selectedText = textarea.value.slice(
+      textarea.selectionStart,
+      textarea.selectionEnd
+    );
+    setSelectedWordCount(countWithoutWhitespace(selectedText));
+  }, []);
 
   if (loadError && !question) {
     return (
@@ -414,21 +466,73 @@ export default function PracticePage() {
         <section className="flex min-w-0 flex-col bg-[#f4f1eb] p-6">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-serif text-xl font-semibold text-stone-900">作答</h2>
+            <div className="text-right text-xs text-stone-600">
+              <p>作答時間：{formatDuration(elapsedSeconds)}</p>
+              <div className="mt-1 flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setTimerRunning(true)}
+                  disabled={timerRunning}
+                  className="rounded border border-stone-300 bg-white px-2 py-0.5 text-[11px] text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  開始
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimerRunning(false)}
+                  disabled={!timerRunning}
+                  className="rounded border border-stone-300 bg-white px-2 py-0.5 text-[11px] text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  暫停
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimerRunning(false);
+                    setElapsedSeconds(0);
+                  }}
+                  disabled={!timerRunning && elapsedSeconds === 0}
+                  className="rounded border border-stone-300 bg-white px-2 py-0.5 text-[11px] text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  重來
+                </button>
+              </div>
+            </div>
           </div>
 
           <textarea
+            ref={answerTextareaRef}
             className="mt-4 min-h-[420px] w-full overflow-y-auto rounded-xl border border-stone-300 bg-white/95 p-4 text-sm leading-relaxed text-stone-900 shadow-inner outline-none ring-stone-400 focus:ring-2"
             placeholder="在此輸入申論草稿..."
             value={answerText}
-            onChange={(e) => setAnswerText(e.target.value)}
+            onChange={(e) => {
+              setAnswerText(e.target.value);
+              const selectedText = e.target.value.slice(
+                e.target.selectionStart,
+                e.target.selectionEnd
+              );
+              setSelectedWordCount(countWithoutWhitespace(selectedText));
+            }}
+            onSelect={updateSelectedWordCount}
             onKeyDownCapture={(e) => {
               const key = e.key.toLowerCase();
+              if ((e.ctrlKey || e.metaKey) && key === "s") {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!analyzing) {
+                  void saveDraft();
+                }
+                return;
+              }
               if ((e.ctrlKey || e.metaKey) && (key === "z" || key === "y")) {
                 e.stopPropagation();
               }
             }}
             disabled={analyzing}
           />
+          <p className="mt-2 text-xs text-stone-600">
+            總計字數｜{answerWordCount}　選取範圍｜{selectedWordCount}
+          </p>
 
           <div className="mt-4">
             <label className="text-sm font-medium text-stone-700">
