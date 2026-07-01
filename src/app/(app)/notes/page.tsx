@@ -112,7 +112,7 @@ export default function NotesPage() {
         const payload = (await response.json().catch(() => null)) as
           | { error?: string }
           | null;
-        throw new Error(payload?.error || "讀取筆記失敗");
+        throw new Error(payload?.error || "讀取解答批改失敗");
       }
       const data = (await response.json()) as Array<Record<string, unknown>>;
       const list: Note[] = data.map((x) => ({
@@ -130,7 +130,7 @@ export default function NotesPage() {
       }));
       setNotes(list);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "讀取筆記失敗");
+      setError(e instanceof Error ? e.message : "讀取解答批改失敗");
       setNotes([]);
     }
   }, []);
@@ -161,12 +161,12 @@ export default function NotesPage() {
         const payload = (await response.json().catch(() => null)) as
           | { error?: string }
           | null;
-        throw new Error(payload?.error || "刪除筆記失敗");
+          throw new Error(payload?.error || "刪除解答批改失敗");
       }
       setNotes((prev) => prev.filter((note) => note.id !== id));
       setDeleteTargetId(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "刪除筆記失敗");
+      setError(e instanceof Error ? e.message : "刪除解答批改失敗");
     } finally {
       setDeleting(false);
     }
@@ -234,7 +234,7 @@ export default function NotesPage() {
           const payload = (await response.json().catch(() => null)) as
             | { error?: string }
             | null;
-          throw new Error(payload?.error || "儲存筆記失敗");
+          throw new Error(payload?.error || "儲存解答批改失敗");
         }
         setNotes((prev) =>
           prev.map((note) =>
@@ -244,7 +244,7 @@ export default function NotesPage() {
         setEditingId(null);
         setDraftBodyHtml("");
       } catch (e) {
-        setError(e instanceof Error ? e.message : "儲存筆記失敗");
+        setError(e instanceof Error ? e.message : "儲存解答批改失敗");
       } finally {
         setSavingId(null);
       }
@@ -254,12 +254,12 @@ export default function NotesPage() {
 
   return (
     <div className="w-full px-4 py-8 md:px-6">
-      <p className="text-sm font-medium text-stone-500">所有筆記</p>
+      <p className="text-sm font-medium text-stone-500">解答批改</p>
       <h1 className="mt-1 font-serif text-3xl font-semibold text-stone-900">
-        研讀筆記
+        解答批改
       </h1>
       <p className="mt-2 text-sm text-stone-600">
-        由答題頁「儲存為筆記」寫入的 AI 摘要會出現在這裡。
+        由答題頁「儲存為解答批改」寫入的 AI 批改摘要會出現在這裡。
       </p>
 
       <div className="mt-6">
@@ -290,8 +290,8 @@ export default function NotesPage() {
       )}
       <ConfirmDeleteDialog
         open={Boolean(deleteTargetId)}
-        title="刪除筆記"
-        description="此動作無法復原，確定要刪除此筆筆記嗎？"
+        title="刪除解答批改"
+        description="此動作無法復原，確定要刪除此筆解答批改嗎？"
         confirmLabel="確認刪除"
         busy={deleting}
         onCancel={() => setDeleteTargetId(null)}
@@ -503,7 +503,7 @@ export default function NotesPage() {
 
       {!error && visibleNotes.length === 0 && (
         <p className="mt-16 text-center text-sm text-stone-500">
-          目前篩選條件下沒有筆記。
+          目前篩選條件下沒有解答批改。
         </p>
       )}
     </div>

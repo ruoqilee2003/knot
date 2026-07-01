@@ -48,15 +48,18 @@ export async function DELETE(_request: Request, context: RouteContext) {
   }
 
   try {
-    const [flashcardsSnap, notesSnap] = await Promise.all([
+    const [flashcardsSnap, notesSnap, personalNotesSnap] = await Promise.all([
       adminDb.collection("flashcards").where("questionId", "==", id).get(),
       adminDb.collection("studyNotes").where("questionId", "==", id).get(),
+      adminDb.collection("personalNotes").where("questionId", "==", id).get(),
     ]);
 
     const refsToDelete = [
       adminDb.collection("questions").doc(id),
+      adminDb.collection("attempts").doc(id),
       ...flashcardsSnap.docs.map((doc) => doc.ref),
       ...notesSnap.docs.map((doc) => doc.ref),
+      ...personalNotesSnap.docs.map((doc) => doc.ref),
     ];
 
     let batch = adminDb.batch();
@@ -78,8 +81,10 @@ export async function DELETE(_request: Request, context: RouteContext) {
       ok: true,
       deleted: {
         question: 1,
+        attempts: 1,
         flashcards: flashcardsSnap.size,
         notes: notesSnap.size,
+        personalNotes: personalNotesSnap.size,
       },
     });
   } catch (error) {
@@ -168,6 +173,12 @@ export async function PUT(request: Request, context: RouteContext) {
         );
       }
       await sourceRef.set(updates, { merge: true });
+      if (typeof updates.subject === "string") {
+        await adminDb
+          .collection("attempts")
+          .doc(id)
+          .set({ subject: updates.subject }, { merge: true });
+      }
       return NextResponse.json({ ok: true, id });
     }
 
@@ -180,14 +191,17 @@ export async function PUT(request: Request, context: RouteContext) {
     const current = sourceSnap.data() ?? {};
     const nextData = { ...current, ...updates };
 
-    const [flashcardsSnap, notesSnap] = await Promise.all([
+    const [flashcardsSnap, notesSnap, personalNotesSnap, attemptSnap] = await Promise.all([
       adminDb.collection("flashcards").where("questionId", "==", id).get(),
       adminDb.collection("studyNotes").where("questionId", "==", id).get(),
+      adminDb.collection("personalNotes").where("questionId", "==", id).get(),
+      adminDb.collection("attempts").doc(id).get(),
     ]);
 
     const refsToUpdate = [
       ...flashcardsSnap.docs.map((doc) => doc.ref),
       ...notesSnap.docs.map((doc) => doc.ref),
+      ...personalNotesSnap.docs.map((doc) => doc.ref),
     ];
 
     let batch = adminDb.batch();
@@ -196,6 +210,16 @@ export async function PUT(request: Request, context: RouteContext) {
     opCount += 1;
     batch.delete(sourceRef);
     opCount += 1;
+    if (attemptSnap.exists) {
+      const nextAttemptData = {
+        ...(attemptSnap.data() ?? {}),
+        questionId: newId,
+      };
+      batch.set(adminDb.collection("attempts").doc(newId), nextAttemptData);
+      opCount += 1;
+      batch.delete(attemptSnap.ref);
+      opCount += 1;
+    }
 
     for (const ref of refsToUpdate) {
       batch.set(ref, { questionId: newId }, { merge: true });
@@ -205,6 +229,14 @@ export async function PUT(request: Request, context: RouteContext) {
         batch = adminDb.batch();
         opCount = 0;
       }
+    }
+    if (typeof nextData.subject === "string" && attemptSnap.exists) {
+      batch.set(
+        adminDb.collection("attempts").doc(newId),
+        { subject: nextData.subject },
+        { merge: true }
+      );
+      opCount += 1;
     }
     if (opCount > 0) {
       await batch.commit();

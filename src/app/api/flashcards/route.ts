@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 
 type FlashcardBody = {
   questionId?: string;
+  attemptId?: string;
   subject?: string;
   cards?: Array<{
     front?: string;
@@ -42,6 +43,8 @@ export async function POST(request: Request) {
 
   const questionId =
     typeof body.questionId === "string" ? body.questionId.trim() : "";
+  const attemptId =
+    typeof body.attemptId === "string" ? body.attemptId.trim() : "";
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
   const cards = Array.isArray(body.cards) ? body.cards : [];
   if (!questionId || cards.length === 0) {
@@ -102,6 +105,7 @@ export async function POST(request: Request) {
       created.push(ref.id);
       batch.set(ref, {
         questionId,
+        attemptId: attemptId || questionId,
         subject,
         front: card.front,
         back: card.back,

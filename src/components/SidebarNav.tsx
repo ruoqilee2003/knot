@@ -6,8 +6,9 @@ import { useRouter } from "next/navigation";
 
 const links = [
   { href: "/", label: "練習大廳" },
-  { href: "/notes", label: "所有筆記" },
+  { href: "/notes", label: "解答批改" },
   { href: "/flashcards", label: "關鍵字卡" },
+  { href: "/keyword-notes", label: "重點筆記" },
 ];
 
 export function SidebarNav() {

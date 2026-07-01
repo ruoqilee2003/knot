@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
+import type { AnalysisResult } from "@/types/analysis";
+import {
+  dedupeKeywordsCaseInsensitive,
+  normalizeKeyword,
+  normalizeKeywords,
+  sanitizeKeyword,
+} from "@/lib/keywords";
 
 export const runtime = "nodejs";
 
@@ -13,18 +20,39 @@ type RouteContext = {
 type DraftBody = {
   text?: string;
   imageUrl?: string | null;
-  status?: "draft" | "analyzed" | "analyze_failed";
+  status?:
+    | "draft"
+    | "completed"
+    | "analyzed"
+    | "analyze_failed"
+    | "flashcards_ready";
   errorMessage?: string | null;
-  analysis?: {
-    examKeyPoints: string[];
-    answerFeedback: string;
-    improvementSuggestions: string;
-    flashcards: Array<{
-      front: string;
-      back: string;
-    }>;
-  } | null;
+  analysis?: AnalysisResult | null;
+  keywords?: string[];
+  keywordDisplay?: string[];
 };
+
+async function upsertKeywordCollection(keywordDisplay: string[]) {
+  if (keywordDisplay.length === 0) return;
+  const batch = adminDb.batch();
+  for (const item of keywordDisplay) {
+    const keyword = normalizeKeyword(item);
+    if (!keyword) continue;
+    const ref = adminDb.collection("keywords").doc(keyword);
+    batch.set(
+      ref,
+      {
+        keyword,
+        displayKeyword: sanitizeKeyword(item),
+        usageCount: FieldValue.increment(1),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+  await batch.commit();
+}
 
 export async function GET(_request: Request, context: RouteContext) {
   const { questionId } = await context.params;
@@ -43,6 +71,8 @@ export async function GET(_request: Request, context: RouteContext) {
         imageUrl?: string | null;
         status?: string;
         errorMessage?: string | null;
+        keywords?: string[];
+        keywordDisplay?: string[];
       };
       latestAnalysis?: DraftBody["analysis"];
     };
@@ -54,6 +84,12 @@ export async function GET(_request: Request, context: RouteContext) {
       id: questionId,
       ...data.latestDraft,
       analysis: data.latestAnalysis ?? null,
+      keywords: normalizeKeywords(data.latestDraft.keywords),
+      keywordDisplay: dedupeKeywordsCaseInsensitive(
+        Array.isArray(data.latestDraft.keywordDisplay)
+          ? data.latestDraft.keywordDisplay
+          : data.latestDraft.keywords ?? []
+      ),
     });
   } catch (error) {
     const message =
@@ -86,6 +122,10 @@ export async function PUT(request: Request, context: RouteContext) {
       ? body.errorMessage.trim()
       : null;
   const analysis = body.analysis ?? null;
+  const keywordDisplay = dedupeKeywordsCaseInsensitive(
+    Array.isArray(body.keywordDisplay) ? body.keywordDisplay : body.keywords ?? []
+  );
+  const keywords = normalizeKeywords(keywordDisplay);
 
   const questionMirrorPayload: Record<string, unknown> = {
     latestDraft: {
@@ -93,6 +133,8 @@ export async function PUT(request: Request, context: RouteContext) {
       imageUrl,
       status,
       errorMessage,
+      keywords,
+      keywordDisplay,
       updatedAt: FieldValue.serverTimestamp(),
     },
   };
@@ -102,10 +144,41 @@ export async function PUT(request: Request, context: RouteContext) {
   }
 
   try {
+    const questionRef = adminDb.collection("questions").doc(questionId);
+    const questionSnap = await questionRef.get();
+    const questionData = questionSnap.data() as { subject?: string } | undefined;
+    const subject =
+      typeof questionData?.subject === "string" ? questionData.subject.trim() : "";
+    await questionRef.set(questionMirrorPayload, { merge: true });
     await adminDb
-      .collection("questions")
+      .collection("attempts")
       .doc(questionId)
-      .set(questionMirrorPayload, { merge: true });
+      .set(
+        {
+          questionId,
+          subject,
+          text,
+          imageUrl,
+          status,
+          errorMessage,
+          analysis,
+          keywords,
+          keywordDisplay,
+          updatedAt: FieldValue.serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    await upsertKeywordCollection(keywordDisplay);
+    await questionRef.set(
+      {
+        latestAttemptStatus: status,
+        latestAttemptUpdatedAt: FieldValue.serverTimestamp(),
+        latestAttemptKeywords: keywords,
+        latestAttemptKeywordDisplay: keywordDisplay,
+      },
+      { merge: true }
+    );
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message =

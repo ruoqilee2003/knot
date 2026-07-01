@@ -8,6 +8,7 @@ type NoteBody = {
   title?: string;
   body?: string;
   questionId?: string;
+  attemptId?: string;
   subject?: string;
   score?: number;
 };
@@ -48,6 +49,8 @@ export async function POST(request: Request) {
   const noteBody = typeof body.body === "string" ? body.body.trim() : "";
   const questionId =
     typeof body.questionId === "string" ? body.questionId.trim() : "";
+  const attemptId =
+    typeof body.attemptId === "string" ? body.attemptId.trim() : "";
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
 
   if (!noteBody || !questionId) {
@@ -95,6 +98,7 @@ export async function POST(request: Request) {
       title,
       body: noteBody,
       questionId,
+      attemptId: attemptId || questionId,
       subject,
       score,
       createdAt: FieldValue.serverTimestamp(),

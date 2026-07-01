@@ -13,6 +13,15 @@ type Row = {
   score: number;
   questionText: string;
   imageUrl: string | null;
+  latestAttemptStatus:
+    | "draft"
+    | "completed"
+    | "analyzed"
+    | "analyze_failed"
+    | "flashcards_ready"
+    | null;
+  latestKeywords: string[];
+  latestKeywordDisplay: string[];
   createdAt: unknown;
 };
 
@@ -24,12 +33,24 @@ export default function HallPage() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState("all");
+  const [keywordFilter, setKeywordFilter] = useState("");
   const [yearOrder, setYearOrder] = useState<"desc" | "asc">("desc");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectingForExport, setSelectingForExport] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const response = await fetch("/api/questions", { method: "GET" });
+      const params = new URLSearchParams();
+      if (subjectFilter !== "all") {
+        params.set("subject", subjectFilter);
+      }
+      if (keywordFilter.trim()) {
+        params.set("keyword", keywordFilter.trim());
+      }
+      const query = params.size > 0 ? `?${params.toString()}` : "";
+      const response = await fetch(`/api/questions${query}`, { method: "GET" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
           | { error?: string }
@@ -44,14 +65,30 @@ export default function HallPage() {
         score: Number(d.score ?? 100),
         questionText: String(d.questionText ?? d.title ?? ""),
         imageUrl: d.imageUrl ? String(d.imageUrl) : null,
+        latestAttemptStatus:
+          typeof d.latestAttemptStatus === "string"
+            ? (d.latestAttemptStatus as Row["latestAttemptStatus"])
+            : null,
+        latestKeywords: Array.isArray(d.latestKeywords)
+          ? d.latestKeywords
+              .map((item) => String(item).trim().toLowerCase())
+              .filter(Boolean)
+          : [],
+        latestKeywordDisplay: Array.isArray(d.latestKeywordDisplay)
+          ? d.latestKeywordDisplay
+              .map((item) => String(item).trim())
+              .filter(Boolean)
+          : [],
         createdAt: d.createdAt ?? null,
       }));
       setRows(next);
+      setSelectedIds([]);
+      setSelectingForExport(false);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "無法讀取題庫");
       setRows([]);
     }
-  }, []);
+  }, [subjectFilter, keywordFilter]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -65,16 +102,21 @@ export default function HallPage() {
   }, [rows]);
 
   const visibleRows = useMemo(() => {
-    const filtered =
-      subjectFilter === "all"
-        ? rows
-        : rows.filter((row) => row.subject === subjectFilter);
-    return [...filtered].sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const left = Number.isFinite(a.year) ? a.year : 0;
       const right = Number.isFinite(b.year) ? b.year : 0;
       return yearOrder === "asc" ? left - right : right - left;
     });
-  }, [rows, subjectFilter, yearOrder]);
+  }, [rows, yearOrder]);
+
+  const completedVisibleRows = useMemo(() => {
+    return visibleRows.filter(
+      (row) =>
+        row.latestAttemptStatus === "completed" ||
+        row.latestAttemptStatus === "analyzed" ||
+        row.latestAttemptStatus === "flashcards_ready"
+    );
+  }, [visibleRows]);
 
   const deleteQuestion = useCallback(
     async (id: string) => {
@@ -99,6 +141,113 @@ export default function HallPage() {
     },
     []
   );
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }, []);
+
+  const allCompletedSelected =
+    completedVisibleRows.length > 0 &&
+    completedVisibleRows.every((row) => selectedIds.includes(row.id));
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelectedIds((prev) => {
+      const completedIds = completedVisibleRows.map((row) => row.id);
+      if (completedIds.every((id) => prev.includes(id))) {
+        return prev.filter((id) => !completedIds.includes(id));
+      }
+      return Array.from(new Set([...prev, ...completedIds]));
+    });
+  }, [completedVisibleRows]);
+
+  const exportSelected = useCallback(async () => {
+    if (selectingForExport && selectedIds.length === 0) {
+      setLoadError("請先選取要匯出的題目");
+      return;
+    }
+    const exportIds =
+      selectedIds.length > 0
+        ? selectedIds
+        : completedVisibleRows.map((row) => row.id);
+    if (exportIds.length === 0) {
+      setLoadError("目前沒有可匯出的題目");
+      return;
+    }
+
+    setExporting(true);
+    setLoadError(null);
+    try {
+      const response = await fetch("/api/export/questions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          questionIds: exportIds,
+          subject: subjectFilter === "all" ? undefined : subjectFilter,
+          keyword: keywordFilter.trim() || undefined,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; records?: Array<{ question: string; answer: string }> }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "匯出失敗");
+      }
+      const records = Array.isArray(payload?.records) ? payload.records : [];
+      const markdown = records
+        .map((record, idx) => {
+          const question = String(record.question ?? "").trim();
+          const answer = String(record.answer ?? "").trim();
+          return [
+            `# 題目 ${idx + 1}`,
+            "",
+            "## 題目",
+            question || "（無題目內容）",
+            "",
+            "## 作答",
+            answer || "（無作答內容）",
+            "",
+          ].join("\n");
+        })
+        .join("\n---\n\n");
+
+      const blob = new Blob([markdown], {
+        type: "text/markdown;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const now = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `knot-export-${now}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "匯出失敗");
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    selectingForExport,
+    selectedIds,
+    completedVisibleRows,
+    subjectFilter,
+    keywordFilter,
+  ]);
+
+  const startSelectingForExport = useCallback(() => {
+    setSelectingForExport(true);
+    setSelectedIds([]);
+  }, []);
+
+  const cancelSelectingForExport = useCallback(() => {
+    setSelectingForExport(false);
+    setSelectedIds([]);
+  }, []);
 
   return (
     <div className="w-full px-4 py-8 md:px-6">
@@ -165,6 +314,23 @@ export default function HallPage() {
         </label>
 
         <label className="text-sm text-stone-700">
+          關鍵字
+          <input
+            type="text"
+            value={keywordFilter}
+            onChange={(e) => setKeywordFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void load();
+              }
+            }}
+            placeholder="#DDoS"
+            className="ml-2 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
+          />
+        </label>
+
+        <label className="text-sm text-stone-700">
           年份
           <select
             value={yearOrder}
@@ -175,6 +341,71 @@ export default function HallPage() {
             <option value="asc">舊到新</option>
           </select>
         </label>
+
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50"
+        >
+          套用條件
+        </button>
+
+        {!selectingForExport ? (
+          <>
+            <button
+              type="button"
+              onClick={startSelectingForExport}
+              disabled={completedVisibleRows.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              選取已完成列表
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportSelected()}
+              disabled={exporting || completedVisibleRows.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              {exporting ? "匯出中…" : "匯出已完成列表"}
+            </button>
+          </>
+        ) : (
+          <>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50">
+              <input
+                type="checkbox"
+                checked={allCompletedSelected}
+                onChange={toggleSelectAllVisible}
+                className="h-4 w-4 rounded border-stone-300 accent-stone-700"
+              />
+              選取已完成列表
+            </label>
+            <button
+              type="button"
+              onClick={() => void exportSelected()}
+              disabled={exporting || completedVisibleRows.length === 0}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${
+                selectedIds.length > 0
+                  ? "border-stone-300 bg-white text-stone-700 hover:bg-stone-50"
+                  : "border-stone-200 bg-stone-100 text-stone-500"
+              }`}
+            >
+              {exporting
+                ? "匯出中…"
+                : selectedIds.length > 0
+                  ? `匯出已選取（${selectedIds.length}）`
+                  : "請先選取題目"}
+            </button>
+            <button
+              type="button"
+              onClick={cancelSelectingForExport}
+              disabled={exporting}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              取消選取
+            </button>
+          </>
+        )}
       </div>
 
       {loadError && (
@@ -207,22 +438,55 @@ export default function HallPage() {
                     {r.imageUrl && (
                       <span className="text-stone-400">含題目附圖</span>
                     )}
+                    {(r.latestAttemptStatus === "completed" ||
+                      r.latestAttemptStatus === "analyzed" ||
+                      r.latestAttemptStatus === "flashcards_ready") && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">
+                        已完成
+                      </span>
+                    )}
                   </div>
                   <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-stone-800">
                     {r.questionText}
                   </p>
+                  {r.latestKeywordDisplay.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1 text-xs text-stone-500">
+                      {r.latestKeywordDisplay.map((kw) => (
+                        <span
+                          key={`${r.id}-${kw}`}
+                          className="rounded-full bg-stone-100 px-2 py-0.5"
+                        >
+                          #{kw}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <span className="mt-3 inline-block text-xs font-medium text-stone-500 group-hover:text-stone-800">
                     進入作答 →
                   </span>
                 </Link>
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditTarget(r)}
-                    className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50"
-                  >
-                    編輯
-                  </button>
+                  {!selectingForExport ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditTarget(r)}
+                      className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50"
+                    >
+                      編輯
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => toggleSelect(r.id)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                        selectedIds.includes(r.id)
+                          ? "border border-stone-900 bg-stone-900 text-white"
+                          : "border border-stone-300 bg-white text-stone-700 hover:bg-stone-50"
+                      }`}
+                    >
+                      {selectedIds.includes(r.id) ? "已選取" : "選取"}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

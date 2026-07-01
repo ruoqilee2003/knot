@@ -7,6 +7,12 @@ import { useParams } from "next/navigation";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseStorage } from "@/lib/firebase";
 import type { AnalysisResult } from "@/types/analysis";
+import {
+  dedupeKeywordsCaseInsensitive,
+  normalizeKeyword,
+  parseKeywordInput,
+  sanitizeKeyword,
+} from "@/lib/keywords";
 
 type Question = {
   subject: string;
@@ -15,12 +21,25 @@ type Question = {
   imageUrl: string | null;
 };
 
+type PersonalNote = {
+  id: string;
+  body: string;
+  keywordDisplay: string[];
+};
+
 type DraftSyncPayload = {
   text: string;
   imageUrl: string | null;
-  status: "draft" | "analyzed" | "analyze_failed";
+  status:
+    | "draft"
+    | "completed"
+    | "analyzed"
+    | "analyze_failed"
+    | "flashcards_ready";
   errorMessage?: string | null;
   analysis?: AnalysisResult;
+  keywords: string[];
+  keywordDisplay: string[];
 };
 
 function draftKey(id: string) {
@@ -65,6 +84,10 @@ export default function PracticePage() {
   const [question, setQuestion] = useState<Question | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [answerText, setAnswerText] = useState("");
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [keywordOptions, setKeywordOptions] = useState<string[]>([]);
+  const [keywordLoading, setKeywordLoading] = useState(false);
   const [answerFile, setAnswerFile] = useState<File | null>(null);
   const [answerPreview, setAnswerPreview] = useState<string | null>(null);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
@@ -73,12 +96,29 @@ export default function PracticePage() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [flashBusy, setFlashBusy] = useState(false);
   const [noteBusy, setNoteBusy] = useState(false);
+  const [personalNoteText, setPersonalNoteText] = useState("");
+  const [personalNoteBusy, setPersonalNoteBusy] = useState(false);
+  const [addingPersonalNote, setAddingPersonalNote] = useState(false);
+  const [personalNotes, setPersonalNotes] = useState<PersonalNote[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [attemptStatus, setAttemptStatus] = useState<
+    "draft" | "completed" | "analyzed" | "analyze_failed" | "flashcards_ready"
+  >("draft");
   const [timerRunning, setTimerRunning] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [selectedWordCount, setSelectedWordCount] = useState(0);
   const answerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const busyMessage = "系統忙碌中，請再試一次";
+  const attemptStatusTextMap: Record<
+    "draft" | "completed" | "analyzed" | "analyze_failed" | "flashcards_ready",
+    string
+  > = {
+    draft: "暫存中",
+    completed: "已完成",
+    analyzed: "已批改",
+    analyze_failed: "批改失敗",
+    flashcards_ready: "已生成字卡",
+  };
 
   useEffect(() => {
     if (!answerFile) {
@@ -134,17 +174,33 @@ export default function PracticePage() {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`/api/drafts/${id}`, { method: "GET" });
+        const response = await fetch(`/api/attempts/${id}`, { method: "GET" });
         if (response.ok) {
           const parsed = (await response.json()) as {
             text?: string;
             imageUrl?: string | null;
             analysis?: AnalysisResult;
+            status?:
+              | "draft"
+              | "completed"
+              | "analyzed"
+              | "analyze_failed"
+              | "flashcards_ready";
+            keywords?: string[];
+            keywordDisplay?: string[];
           };
           if (cancelled) return;
           if (typeof parsed.text === "string") setAnswerText(parsed.text);
           if (parsed.imageUrl) setAnswerPreview(parsed.imageUrl);
           if (parsed.analysis) setAnalysis(parsed.analysis);
+          if (parsed.status) setAttemptStatus(parsed.status);
+          const nextKeywords = dedupeKeywordsCaseInsensitive(
+            Array.isArray(parsed.keywordDisplay)
+              ? parsed.keywordDisplay
+              : parsed.keywords ?? []
+          );
+          setKeywords(nextKeywords);
+          setKeywordInput("");
           return;
         }
       } catch {
@@ -170,6 +226,32 @@ export default function PracticePage() {
   }, [id]);
 
   useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`/api/personal-notes?questionId=${encodeURIComponent(id)}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as Array<Record<string, unknown>>;
+        if (cancelled) return;
+        const notes = data.map((item) => ({
+          id: String(item.id ?? ""),
+          body: String(item.body ?? ""),
+          keywordDisplay: Array.isArray(item.keywordDisplay)
+            ? item.keywordDisplay.map((keyword) => String(keyword))
+            : [],
+        }));
+        setPersonalNotes(notes);
+      } catch {
+        /* ignore personal note load errors */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  useEffect(() => {
     if (!timerRunning) return;
     const timer = window.setInterval(() => {
       setElapsedSeconds((prev) => prev + 1);
@@ -177,10 +259,129 @@ export default function PracticePage() {
     return () => window.clearInterval(timer);
   }, [timerRunning]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        setKeywordLoading(true);
+        const params = new URLSearchParams();
+        if (keywordInput.trim()) {
+          params.set("query", keywordInput.trim());
+        }
+        params.set("limit", "30");
+        const response = await fetch(`/api/keywords?${params.toString()}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as Array<{ keyword?: string }>;
+        if (cancelled) return;
+        const options = data
+          .map((item) => sanitizeKeyword(String(item.keyword ?? "")))
+          .filter(Boolean);
+        setKeywordOptions(dedupeKeywordsCaseInsensitive(options));
+      } finally {
+        if (!cancelled) setKeywordLoading(false);
+      }
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [keywordInput]);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3200);
   };
+
+  const ensureKeywordCollection = useCallback(async (items: string[]) => {
+    if (items.length === 0) return;
+    await fetch("/api/keywords", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keywords: items }),
+    });
+  }, []);
+
+  const mergeKeywords = useCallback((base: string[], extra: string[]) => {
+    return dedupeKeywordsCaseInsensitive([...base, ...extra]);
+  }, []);
+
+  const applyPendingKeywords = useCallback(() => {
+    const pending = parseKeywordInput(keywordInput);
+    const merged = mergeKeywords(keywords, pending);
+    setKeywords(merged);
+    setKeywordInput("");
+    return merged;
+  }, [keywordInput, keywords, mergeKeywords]);
+
+  const addSingleKeyword = useCallback(
+    async (value: string) => {
+      const nextKeyword = sanitizeKeyword(value);
+      if (!nextKeyword) return;
+      const exists = keywords.some(
+        (item) => normalizeKeyword(item) === normalizeKeyword(nextKeyword)
+      );
+      if (exists) {
+        setKeywordInput("");
+        return;
+      }
+      const merged = mergeKeywords(keywords, [nextKeyword]);
+      setKeywords(merged);
+      setKeywordInput("");
+      void ensureKeywordCollection([nextKeyword]);
+    },
+    [ensureKeywordCollection, keywords, mergeKeywords]
+  );
+
+  const removeKeyword = useCallback((value: string) => {
+    setKeywords((prev) => prev.filter((item) => item !== value));
+  }, []);
+
+  const savePersonalNote = useCallback(async () => {
+    if (!id || !question) return;
+    const body = personalNoteText.trim();
+    if (!body) {
+      setApiError("請先輸入重點筆記內容");
+      return;
+    }
+
+    setApiError(null);
+    setPersonalNoteBusy(true);
+    try {
+      const payloadKeywords = mergeKeywords(keywords, parseKeywordInput(keywordInput));
+      const response = await fetch("/api/personal-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          body,
+          questionId: id,
+          subject: question.subject,
+          keywords: payloadKeywords,
+          keywordDisplay: payloadKeywords,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; id?: string }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "儲存重點筆記失敗");
+      }
+      setPersonalNotes((prev) => [
+        {
+          id: String(payload?.id ?? crypto.randomUUID()),
+          body,
+          keywordDisplay: payloadKeywords,
+        },
+        ...prev,
+      ]);
+      setPersonalNoteText("");
+      setAddingPersonalNote(false);
+      showToast("已儲存重點筆記");
+    } catch (e) {
+      setApiError(e instanceof Error ? e.message : "儲存重點筆記失敗");
+    } finally {
+      setPersonalNoteBusy(false);
+    }
+  }, [id, question, personalNoteText, mergeKeywords, keywords, keywordInput]);
 
   const getPersistableImageUrl = useCallback(async () => {
     if (answerFile) {
@@ -198,7 +399,7 @@ export default function PracticePage() {
 
   const syncDraftToFirestore = useCallback(
     async (payload: DraftSyncPayload) => {
-      const response = await fetch(`/api/drafts/${id}`, {
+      const response = await fetch(`/api/attempts/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -220,6 +421,7 @@ export default function PracticePage() {
     setApiError(null);
     try {
       const imageUrl = await getPersistableImageUrl();
+      const normalizedKeywords = applyPendingKeywords();
       const payload = { text: answerText, imageUrl };
       localStorage.setItem(draftKey(id), JSON.stringify(payload));
 
@@ -227,9 +429,14 @@ export default function PracticePage() {
         ...payload,
         status: "draft",
         errorMessage: null,
+        keywords: normalizedKeywords,
+        keywordDisplay: normalizedKeywords,
       });
 
       setDraftSavedAt(new Date().toLocaleString());
+      setKeywords(normalizedKeywords);
+      await ensureKeywordCollection(normalizedKeywords);
+      setAttemptStatus("draft");
       showToast("草稿已儲存");
     } catch (e) {
       setApiError(
@@ -238,7 +445,44 @@ export default function PracticePage() {
           : "草稿儲存失敗（本機草稿仍已儲存）"
       );
     }
-  }, [id, answerText, getPersistableImageUrl, syncDraftToFirestore]);
+  }, [
+    id,
+    answerText,
+    applyPendingKeywords,
+    ensureKeywordCollection,
+    getPersistableImageUrl,
+    syncDraftToFirestore,
+  ]);
+
+  const markCompleted = useCallback(async () => {
+    if (!id) return;
+    setApiError(null);
+    try {
+      const imageUrl = await getPersistableImageUrl();
+      const normalizedKeywords = applyPendingKeywords();
+      await syncDraftToFirestore({
+        text: answerText,
+        imageUrl,
+        status: "completed",
+        errorMessage: null,
+        keywords: normalizedKeywords,
+        keywordDisplay: normalizedKeywords,
+      });
+      setKeywords(normalizedKeywords);
+      await ensureKeywordCollection(normalizedKeywords);
+      setAttemptStatus("completed");
+      showToast("已標記完成（仍可繼續修改）");
+    } catch (e) {
+      setApiError(e instanceof Error ? e.message : "標記完成失敗");
+    }
+  }, [
+    id,
+    answerText,
+    applyPendingKeywords,
+    ensureKeywordCollection,
+    getPersistableImageUrl,
+    syncDraftToFirestore,
+  ]);
 
   const submitAnalyze = useCallback(async () => {
     if (!question || !id) return;
@@ -253,6 +497,7 @@ export default function PracticePage() {
     setAnalysis(null);
     try {
       const imageUrl = await getPersistableImageUrl();
+      const normalizedKeywords = applyPendingKeywords();
       let answerImageBase64: string | undefined;
       let answerImageMimeType: string | undefined;
       if (answerFile) {
@@ -295,7 +540,12 @@ export default function PracticePage() {
         status: "analyzed",
         analysis: data,
         errorMessage: null,
+        keywords: normalizedKeywords,
+        keywordDisplay: normalizedKeywords,
       });
+      setKeywords(normalizedKeywords);
+      await ensureKeywordCollection(normalizedKeywords);
+      setAttemptStatus("analyzed");
       showToast("批改完成");
     } catch (e) {
       const message = e instanceof Error ? e.message : "批改失敗";
@@ -309,10 +559,13 @@ export default function PracticePage() {
               : null,
           status: "analyze_failed",
           errorMessage: message,
+          keywords: mergeKeywords(keywords, parseKeywordInput(keywordInput)),
+          keywordDisplay: mergeKeywords(keywords, parseKeywordInput(keywordInput)),
         });
       } catch {
         /* ignore secondary sync error */
       }
+      setAttemptStatus("analyze_failed");
     } finally {
       setAnalyzing(false);
     }
@@ -322,6 +575,11 @@ export default function PracticePage() {
     answerFile,
     answerPreview,
     id,
+    applyPendingKeywords,
+    ensureKeywordCollection,
+    mergeKeywords,
+    keywords,
+    keywordInput,
     getPersistableImageUrl,
     syncDraftToFirestore,
   ]);
@@ -335,6 +593,7 @@ export default function PracticePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           questionId: id,
+          attemptId: id,
           subject: question?.subject ?? "",
           cards: analysis.flashcards,
         }),
@@ -345,13 +604,34 @@ export default function PracticePage() {
           | null;
         throw new Error(payload?.error || "字卡寫入失敗");
       }
+      await syncDraftToFirestore({
+        text: answerText,
+        imageUrl:
+          answerPreview && answerPreview.startsWith("http") ? answerPreview : null,
+        status: "flashcards_ready",
+        errorMessage: null,
+        analysis,
+        keywords: mergeKeywords(keywords, parseKeywordInput(keywordInput)),
+        keywordDisplay: mergeKeywords(keywords, parseKeywordInput(keywordInput)),
+      });
+      setAttemptStatus("flashcards_ready");
       showToast("已儲存字卡到 Firestore");
     } catch (e) {
       setApiError(e instanceof Error ? e.message : "字卡寫入失敗");
     } finally {
       setFlashBusy(false);
     }
-  }, [analysis, id, question?.subject]);
+  }, [
+    analysis,
+    id,
+    question?.subject,
+    answerText,
+    answerPreview,
+    mergeKeywords,
+    keywords,
+    keywordInput,
+    syncDraftToFirestore,
+  ]);
 
   const saveAsNote = useCallback(async () => {
     if (!analysis || !question || !id) return;
@@ -379,6 +659,7 @@ export default function PracticePage() {
           title: makeNoteTitleFromQuestion(question.questionText),
           body,
           questionId: id,
+          attemptId: id,
           subject: question.subject,
         }),
       });
@@ -386,11 +667,11 @@ export default function PracticePage() {
         const payload = (await response.json().catch(() => null)) as
           | { error?: string }
           | null;
-        throw new Error(payload?.error || "筆記儲存失敗");
+        throw new Error(payload?.error || "解答批改儲存失敗");
       }
-      showToast("已儲存筆記到 Firestore");
+      showToast("已儲存解答批改到 Firestore");
     } catch (e) {
-      setApiError(e instanceof Error ? e.message : "筆記儲存失敗");
+      setApiError(e instanceof Error ? e.message : "解答批改儲存失敗");
     } finally {
       setNoteBusy(false);
     }
@@ -465,7 +746,12 @@ export default function PracticePage() {
       <div className="grid flex-1 grid-cols-1 xl:grid-cols-2 xl:divide-x xl:divide-stone-200">
         <section className="flex min-w-0 flex-col bg-[#f4f1eb] p-6">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="font-serif text-xl font-semibold text-stone-900">作答</h2>
+            <div>
+              <h2 className="font-serif text-xl font-semibold text-stone-900">作答</h2>
+              <p className="mt-1 text-xs text-stone-600">
+                狀態：{attemptStatusTextMap[attemptStatus]}
+              </p>
+            </div>
             <div className="text-right text-xs text-stone-600">
               <p>作答時間：{formatDuration(elapsedSeconds)}</p>
               <div className="mt-1 flex justify-end gap-1.5">
@@ -498,6 +784,85 @@ export default function PracticePage() {
                 </button>
               </div>
             </div>
+          </div>
+
+          <div className="mt-4">
+            <label className="text-sm font-medium text-stone-700">
+              關鍵字（可新建，也可選擇既有關鍵字）
+            </label>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={keywordInput}
+                onChange={(e) => {
+                  setKeywordInput(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === "," || e.key === "，") {
+                    e.preventDefault();
+                    void addSingleKeyword(keywordInput);
+                  }
+                }}
+                list="keyword-suggestions"
+                placeholder="#DDoS"
+                className="min-w-[220px] flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2"
+                disabled={analyzing}
+              />
+              <datalist id="keyword-suggestions">
+                {keywordOptions.map((item) => (
+                  <option key={item} value={`#${item}`} />
+                ))}
+              </datalist>
+              <button
+                type="button"
+                onClick={() => void addSingleKeyword(keywordInput)}
+                disabled={analyzing || !keywordInput.trim()}
+                className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+              >
+                新增關鍵字
+              </button>
+              <select
+                value=""
+                onChange={(e) => {
+                  const selected = e.target.value;
+                  if (!selected) return;
+                  void addSingleKeyword(selected);
+                }}
+                disabled={analyzing || keywordOptions.length === 0}
+                className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-xs text-stone-700"
+              >
+                <option value="">選擇既有關鍵字</option>
+                {keywordOptions
+                  .filter(
+                    (item) =>
+                      !keywords.some(
+                        (chosen) => normalizeKeyword(chosen) === normalizeKeyword(item)
+                      )
+                  )
+                  .map((item) => (
+                    <option key={item} value={item}>
+                      #{item}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            {keywordLoading && (
+              <p className="mt-1 text-xs text-stone-500">讀取關鍵字中…</p>
+            )}
+            {keywords.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {keywords.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    onClick={() => removeKeyword(item)}
+                    className="rounded-full bg-stone-200 px-2 py-0.5 text-xs text-stone-700 hover:bg-stone-300"
+                  >
+                    #{item} ×
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <textarea
@@ -558,23 +923,111 @@ export default function PracticePage() {
             )}
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 grid grid-cols-4 gap-2">
             <button
               type="button"
               onClick={() => void saveDraft()}
               disabled={analyzing}
               className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-800 hover:bg-stone-50 disabled:opacity-50"
             >
-              草稿儲存
+              暫存
+            </button>
+            <button
+              type="button"
+              onClick={() => void markCompleted()}
+              disabled={analyzing}
+              className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-800 hover:bg-stone-50 disabled:opacity-50"
+            >
+              完成
             </button>
             <button
               type="button"
               onClick={() => void submitAnalyze()}
               disabled={analyzing}
-              className="rounded-xl bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-60"
+              className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-800 hover:bg-stone-50 disabled:opacity-50"
             >
-              {analyzing ? "AI 批改中…" : "正式送出批改"}
+              {analyzing ? "AI 批改中…" : "批改"}
             </button>
+            <button
+              type="button"
+              onClick={() => void addFlashcards()}
+              disabled={analyzing || flashBusy || !analysis}
+              className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-800 hover:bg-stone-50 disabled:opacity-50"
+            >
+              {flashBusy ? "生成中…" : "字卡"}
+            </button>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-stone-200 bg-white/80 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium text-stone-700">重點筆記</label>
+              {!addingPersonalNote ? (
+                <button
+                  type="button"
+                  onClick={() => setAddingPersonalNote(true)}
+                  disabled={analyzing}
+                  className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  新增重點筆記
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingPersonalNote(false);
+                      setPersonalNoteText("");
+                    }}
+                    disabled={personalNoteBusy}
+                    className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void savePersonalNote()}
+                    disabled={personalNoteBusy || analyzing}
+                    className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                  >
+                    {personalNoteBusy ? "儲存中…" : "儲存重點筆記"}
+                  </button>
+                </div>
+              )}
+            </div>
+            {addingPersonalNote && (
+              <textarea
+                value={personalNoteText}
+                onChange={(e) => setPersonalNoteText(e.target.value)}
+                placeholder="例如：DDoS防禦口訣、題目常見陷阱、答題框架..."
+                className="mt-2 min-h-[90px] w-full rounded-lg border border-stone-300 bg-white p-3 text-sm leading-relaxed text-stone-900 outline-none ring-stone-400 focus:ring-2"
+                disabled={analyzing}
+              />
+            )}
+            {personalNotes.length > 0 ? (
+              <ul className="mt-3 space-y-2">
+                {personalNotes.map((note) => (
+                  <li key={note.id} className="rounded-lg border border-stone-200 bg-[#fffdf8] p-2">
+                    {note.keywordDisplay.length > 0 && (
+                      <div className="mb-1 flex flex-wrap gap-1">
+                        {note.keywordDisplay.map((item) => (
+                          <span
+                            key={`${note.id}-${item}`}
+                            className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] text-stone-600"
+                          >
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="line-clamp-3 whitespace-pre-wrap text-xs text-stone-700">
+                      {note.body}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-xs text-stone-500">目前尚無重點筆記。</p>
+            )}
           </div>
           {draftSavedAt && (
             <p className="mt-2 text-xs text-stone-500">上次草稿時間：{draftSavedAt}</p>
@@ -610,19 +1063,11 @@ export default function PracticePage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => void addFlashcards()}
-                  disabled={flashBusy}
-                  className="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-800 disabled:opacity-60"
-                >
-                  {flashBusy ? "寫入中…" : "轉為字卡"}
-                </button>
-                <button
-                  type="button"
                   onClick={() => void saveAsNote()}
                   disabled={noteBusy}
                   className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-800 hover:bg-stone-50 disabled:opacity-60"
                 >
-                  {noteBusy ? "儲存中…" : "儲存為筆記"}
+                  {noteBusy ? "儲存中…" : "儲存為解答批改"}
                 </button>
               </div>
               <div>
