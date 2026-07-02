@@ -32,6 +32,16 @@ type AttemptDoc = {
   keywordDisplay?: string[];
 };
 
+function getCreatedAtMillis(value: unknown): number {
+  if (!value || typeof value !== "object") return 0;
+  const candidate = value as { toMillis?: () => number };
+  if (typeof candidate.toMillis === "function") {
+    const millis = candidate.toMillis();
+    return Number.isFinite(millis) ? millis : 0;
+  }
+  return 0;
+}
+
 type QuestionBody = {
   questionId?: string;
   questionText?: string;
@@ -51,14 +61,27 @@ export async function GET(request: Request) {
     let query: FirebaseFirestore.Query = adminDb.collection("questions");
     if (subject) {
       query = query.where("subject", "==", subject);
+    } else {
+      query = query.orderBy("createdAt", "desc");
     }
-    query = query.orderBy("createdAt", "desc").limit(300);
+    if (!subject) {
+      query = query.limit(300);
+    }
 
     const snapshot = await query.get();
     let docs = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...(doc.data() as Omit<QuestionDoc, "id">),
     }));
+
+    if (subject) {
+      docs = docs
+        .sort(
+          (a, b) =>
+            getCreatedAtMillis(b.createdAt) - getCreatedAtMillis(a.createdAt)
+        )
+        .slice(0, 300);
+    }
 
     if (keyword) {
       const attemptsWithKeyword = await adminDb

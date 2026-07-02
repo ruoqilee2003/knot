@@ -6,7 +6,7 @@ export default function AppShellLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen w-full flex-1 flex-col md:h-screen md:min-h-0 md:flex-row md:overflow-hidden">
+    <div className="flex min-h-dvh w-full flex-1 flex-col bg-[#f4f1eb] md:h-screen md:min-h-0 md:flex-row md:overflow-hidden">
       <div className="shrink-0 md:h-screen">
         <SidebarNav />
       </div>
