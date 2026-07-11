@@ -9,6 +9,7 @@ const links = [
   { href: "/notes", label: "解答批改" },
   { href: "/flashcards", label: "關鍵字卡" },
   { href: "/review", label: "字卡複習" },
+  { href: "/keypoints", label: "速讀重點" },
   { href: "/keyword-notes", label: "重點筆記" },
   { href: "/stats", label: "統計儀表板" },
 ];

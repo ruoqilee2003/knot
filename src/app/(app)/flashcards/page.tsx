@@ -11,6 +11,8 @@ type Card = {
   subject: string;
   questionId: string | null;
   createdAt: unknown;
+  rememberCount: number;
+  forgetCount: number;
 };
 
 function flashcardsToMarkdown(cards: Card[]): string {
@@ -60,6 +62,8 @@ export default function FlashcardsPage() {
         subject: String(x.subject ?? ""),
         questionId: x.questionId ? String(x.questionId) : null,
         createdAt: x.createdAt ?? null,
+        rememberCount: typeof x.rememberCount === "number" ? x.rememberCount : 0,
+        forgetCount: typeof x.forgetCount === "number" ? x.forgetCount : 0,
       }));
       setCards(list);
     } catch (e) {
@@ -251,9 +255,23 @@ export default function FlashcardsPage() {
               key={c.id}
               className="rounded-2xl border border-stone-200 bg-[#fffdf8] p-5 shadow-sm"
             >
-              {c.subject && (
-                <p className="text-xs font-medium text-stone-500">{c.subject}</p>
-              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {c.subject && (
+                  <p className="text-xs font-medium text-stone-500">
+                    {c.subject}
+                  </p>
+                )}
+                {(c.rememberCount > 0 || c.forgetCount > 0) && (
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
+                      記得 ×{c.rememberCount}
+                    </span>
+                    <span className="rounded-full bg-rose-50 px-2 py-0.5 font-medium text-rose-700">
+                      不記得 ×{c.forgetCount}
+                    </span>
+                  </span>
+                )}
+              </div>
               <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
                 Q
               </p>

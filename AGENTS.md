@@ -22,7 +22,8 @@ This version has breaking changes — APIs, conventions, and file structure may 
 | `/` | 練習大廳：題目列表、篩選（科目/關鍵字/年份）、狀態徽章（已完成/已批改/已生成字卡）、勾選匯出 Markdown、新增/編輯/刪除題目 |
 | `/practice/[id]` | 作答頁：計時器、關鍵字標籤、草稿自動儲存（本機 0.8s / Firestore 4s debounce）、AI 批改、轉字卡、儲存解答批改與重點筆記 |
 | `/flashcards` | 字卡總覽：純文字編輯、依科目篩選、匯出 Markdown |
-| `/review` | 字卡複習：隨機洗牌、點擊 3D 翻面、鍵盤操作（空白翻面、←→ 切換） |
+| `/review` | 字卡複習：先設定範圍（科目、勾選關鍵字、全部/加強不記得），開始後隨機洗牌翻卡並回答「記得/不記得」（記入 rememberCount/forgetCount），結束有結算畫面。鍵盤：空白翻面、1 記得、2 不記得、←→ 切換 |
+| `/keypoints` | 速讀重點：彙整所有已批改題目的 examKeyPoints，依科目篩選、往下滑速讀 |
 | `/notes`、`/keyword-notes` | 解答批改筆記、重點筆記列表 |
 | `/stats` | 統計儀表板：總覽數字、各科進度條、近八週活動、常用關鍵字 |
 | `/login` | 登入頁（`(app)` 群組之外） |
@@ -33,14 +34,17 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - `attempts/[questionId]`：一題一份作答紀錄（文件 ID = questionId）。PUT 會同步鏡射 `latestAttemptStatus`/`latestAttemptKeywords` 回 questions，且只對「新加入」的關鍵字遞增 usageCount（勿改壞，自動儲存會頻繁 PUT）；帶 `clearAnalysis: true` 可刪除已存的批改結果
 - `analyze`：Gemini 批改（`GEMINI_MODEL`，Pro 級重推理），輸出 `{ examKeyPoints: string[](3~6), flashcards: {front,back}[](2~8) }`，數量彈性、超限截斷。舊資料可能還有 `answerFeedback`/`improvementSuggestions`（型別中為 optional）
 - `ocr`：題目圖片辨識文字（`GEMINI_OCR_MODEL`，最便宜的 Flash-Lite），圖片只進記憶體不儲存，新增題目視窗的「掃描圖片辨識文字」按鈕會呼叫
-- `flashcards`：GET 列表 / POST 寫入（同題同內容去重）/ `DELETE ?questionId=` 清除該題全部字卡
+- `flashcards`：GET 列表（會批次附帶各題 attempts 的 `keywordDisplay` 供複習頁篩選）/ POST 寫入（同題同內容去重）/ `DELETE ?questionId=` 清除該題全部字卡
+- `flashcards/[id]`：PUT 帶 `review: "remember" | "forget"` 會遞增 `rememberCount`/`forgetCount` 並更新 `lastReviewedAt`（優先於其他欄位更新）；一般 PUT 更新 front/back；DELETE 刪單張
+- `keypoints`：GET 彙整已批改 attempts 的 `analysis.examKeyPoints`，批次補題目文字（getAll，勿改成 N+1）
 - `study-notes`、`personal-notes`、`keywords`、`export/questions`、`stats`、`auth/login`、`auth/logout`
 
 ## Firestore collections
 
 - `questions`：題目 + 鏡射欄位（`latestAttemptStatus`、`latestAttemptKeywords`、`latestAttemptKeywordDisplay`）
 - `attempts`：作答紀錄（ID = questionId），status 流轉：`draft → completed → analyzed → flashcards_ready`（另有 `analyze_failed`）
-- `flashcards`、`studyNotes`（解答批改）、`personalNotes`（重點筆記）、`keywords`（ID = 正規化關鍵字，含 usageCount）
+- `flashcards`：字卡（含 `rememberCount`/`forgetCount`/`lastReviewedAt` 複習統計，舊卡可能沒有這些欄位）
+- `studyNotes`（解答批改）、`personalNotes`（重點筆記）、`keywords`（ID = 正規化關鍵字，含 usageCount）
 
 ## 認證
 

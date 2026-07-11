@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -14,6 +15,8 @@ type UpdateFlashcardBody = {
   back?: string;
   frontHtml?: string;
   backHtml?: string;
+  /** 複習結果回報：記得或不記得，會遞增對應計數 */
+  review?: "remember" | "forget";
 };
 
 export async function DELETE(_request: Request, context: RouteContext) {
@@ -43,6 +46,27 @@ export async function PUT(request: Request, context: RouteContext) {
     body = (await request.json()) as UpdateFlashcardBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (body.review === "remember" || body.review === "forget") {
+    const field = body.review === "remember" ? "rememberCount" : "forgetCount";
+    try {
+      await adminDb
+        .collection("flashcards")
+        .doc(id)
+        .set(
+          {
+            [field]: FieldValue.increment(1),
+            lastReviewedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      return NextResponse.json({ ok: true });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to record review";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
 
   const updates: Record<string, unknown> = {};

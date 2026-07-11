@@ -23,9 +23,50 @@ export async function GET() {
       .get();
     const cards = snapshot.docs.map((doc) => ({
       id: doc.id,
-      ...doc.data(),
+      ...(doc.data() as Record<string, unknown>),
+    })) as Array<Record<string, unknown> & { id: string; questionId?: string }>;
+
+    // 附帶各題目的關鍵字（來自 attempts），供複習頁勾選關鍵字篩選用
+    const questionIds = Array.from(
+      new Set(
+        cards
+          .map((card) =>
+            typeof card.questionId === "string" ? card.questionId : ""
+          )
+          .filter(Boolean)
+      )
+    );
+    const keywordMap = new Map<string, string[]>();
+    if (questionIds.length > 0) {
+      const attemptSnaps = await adminDb.getAll(
+        ...questionIds.map((id) => adminDb.collection("attempts").doc(id))
+      );
+      for (const snap of attemptSnaps) {
+        if (!snap.exists) continue;
+        const data = snap.data() as {
+          keywordDisplay?: string[];
+          keywords?: string[];
+        };
+        const display = Array.isArray(data.keywordDisplay)
+          ? data.keywordDisplay
+          : Array.isArray(data.keywords)
+            ? data.keywords
+            : [];
+        keywordMap.set(
+          snap.id,
+          display.filter((item): item is string => typeof item === "string")
+        );
+      }
+    }
+
+    const enriched = cards.map((card) => ({
+      ...card,
+      keywordDisplay:
+        keywordMap.get(
+          typeof card.questionId === "string" ? card.questionId : ""
+        ) ?? [],
     }));
-    return NextResponse.json(cards);
+    return NextResponse.json(enriched);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch flashcards";
