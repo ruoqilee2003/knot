@@ -9,6 +9,7 @@ type QuestionDraft = {
   year: number;
   score: number;
   questionText: string;
+  isArchaeology?: boolean;
 };
 
 type Props = {
@@ -31,6 +32,7 @@ export function EditQuestionModal({
   const [year, setYear] = useState(question?.year ?? new Date().getFullYear());
   const [score, setScore] = useState(question?.score ?? 100);
   const [questionText, setQuestionText] = useState(question?.questionText ?? "");
+  const [isArchaeology, setIsArchaeology] = useState(question?.isArchaeology === true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +59,7 @@ export function EditQuestionModal({
           year: Number(year) || new Date().getFullYear(),
           score: Number(score) > 0 ? Number(score) : 100,
           questionText: questionText.trim(),
+          isArchaeology,
         }),
       });
       if (!response.ok) {
@@ -134,6 +137,15 @@ export function EditQuestionModal({
               />
             </div>
           </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-stone-700">
+            <input
+              type="checkbox"
+              checked={isArchaeology}
+              onChange={(e) => setIsArchaeology(e.target.checked)}
+              className="h-4 w-4 rounded border-stone-300 accent-stone-800"
+            />
+            考古（歷屆考題）
+          </label>
           <div>
             <label className="text-sm font-medium text-stone-700">題目內容</label>
             <textarea

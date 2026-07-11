@@ -10,7 +10,10 @@ export default function AppShellLayout({
       <div className="shrink-0 md:h-screen">
         <SidebarNav />
       </div>
-      <div className="min-h-0 flex-1 bg-[#f4f1eb] md:h-screen md:overflow-y-auto">
+      <div
+        id="app-main-scroll"
+        className="min-h-0 flex-1 bg-[#f4f1eb] md:h-screen md:overflow-y-auto"
+      >
         {children}
       </div>
     </div>

@@ -13,6 +13,14 @@ import { useSearchParams } from "next/navigation";
 import { AddQuestionModal } from "@/components/AddQuestionModal";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 import { EditQuestionModal } from "@/components/EditQuestionModal";
+import {
+  bindHallScrollListener,
+  getHallScrollTop,
+  readHallScrollState,
+  restoreHallScrollTop,
+  saveHallScrollState,
+  type HallScrollState,
+} from "@/lib/hall-scroll-restore";
 
 type Row = {
   id: string;
@@ -21,6 +29,7 @@ type Row = {
   score: number;
   questionText: string;
   imageUrl: string | null;
+  isArchaeology: boolean;
   latestAttemptStatus:
     | "draft"
     | "completed"
@@ -36,6 +45,7 @@ type Row = {
 function HallPageContent() {
   const searchParams = useSearchParams();
   const keywordParam = searchParams.get("keyword") ?? "";
+  const savedHallStateRef = useRef(readHallScrollState());
 
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,8 +55,16 @@ function HallPageContent() {
   const [editTarget, setEditTarget] = useState<Row | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [subjectFilter, setSubjectFilter] = useState("all");
-  const [keywordFilter, setKeywordFilter] = useState(keywordParam);
+  const [subjectFilter, setSubjectFilter] = useState(
+    () => savedHallStateRef.current?.subjectFilter ?? "all"
+  );
+  const [keywordFilter, setKeywordFilter] = useState(
+    () => keywordParam || savedHallStateRef.current?.keywordFilter || ""
+  );
+  const [archaeologyFilter, setArchaeologyFilter] = useState<"all" | "archaeology">(
+    () => savedHallStateRef.current?.archaeologyFilter ?? "all"
+  );
+  const restoredScrollRef = useRef(false);
 
   // 從其他頁（例如統計儀表板的關鍵字）帶著 ?keyword= 連過來時同步篩選條件
   useEffect(() => {
@@ -55,7 +73,9 @@ function HallPageContent() {
       setKeywordFilter(keywordParam);
     }
   }, [keywordParam]);
-  const [yearOrder, setYearOrder] = useState<"desc" | "asc">("desc");
+  const [sortMode, setSortMode] = useState<
+    "year-desc" | "year-asc" | "unfinished-first"
+  >(() => savedHallStateRef.current?.sortMode ?? "unfinished-first");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectingForExport, setSelectingForExport] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -73,6 +93,9 @@ function HallPageContent() {
       }
       if (keywordFilter.trim()) {
         params.set("keyword", keywordFilter.trim());
+      }
+      if (archaeologyFilter === "archaeology") {
+        params.set("archaeology", "1");
       }
       const query = params.size > 0 ? `?${params.toString()}` : "";
       const response = await fetch(`/api/questions${query}`, {
@@ -93,6 +116,7 @@ function HallPageContent() {
         score: Number(d.score ?? 100),
         questionText: String(d.questionText ?? d.title ?? ""),
         imageUrl: d.imageUrl ? String(d.imageUrl) : null,
+        isArchaeology: d.isArchaeology === true,
         latestAttemptStatus:
           typeof d.latestAttemptStatus === "string"
             ? (d.latestAttemptStatus as Row["latestAttemptStatus"])
@@ -119,12 +143,30 @@ function HallPageContent() {
       setRows([]);
       setLoading(false);
     }
-  }, [subjectFilter, keywordFilter]);
+  }, [subjectFilter, keywordFilter, archaeologyFilter]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  const persistHallScroll = useCallback(() => {
+    const nextState: HallScrollState = {
+      scrollTop: getHallScrollTop(),
+      subjectFilter,
+      keywordFilter,
+      sortMode,
+      archaeologyFilter,
+    };
+    saveHallScrollState(nextState);
+  }, [subjectFilter, keywordFilter, sortMode, archaeologyFilter]);
+
+  // 在大廳捲動或調整篩選時記住位置，從作答頁返回時可還原
+  useEffect(() => bindHallScrollListener(persistHallScroll), [persistHallScroll]);
+
+  useEffect(() => {
+    persistHallScroll();
+  }, [persistHallScroll]);
 
   const subjects = useMemo(() => {
     return Array.from(
@@ -133,12 +175,35 @@ function HallPageContent() {
   }, [rows]);
 
   const visibleRows = useMemo(() => {
+    const isFinished = (row: Row) =>
+      row.latestAttemptStatus === "completed" ||
+      row.latestAttemptStatus === "analyzed" ||
+      row.latestAttemptStatus === "flashcards_ready";
     return [...rows].sort((a, b) => {
+      if (sortMode === "unfinished-first") {
+        const finishedDiff = Number(isFinished(a)) - Number(isFinished(b));
+        if (finishedDiff !== 0) return finishedDiff;
+      }
       const left = Number.isFinite(a.year) ? a.year : 0;
       const right = Number.isFinite(b.year) ? b.year : 0;
-      return yearOrder === "asc" ? left - right : right - left;
+      return sortMode === "year-asc" ? left - right : right - left;
     });
-  }, [rows, yearOrder]);
+  }, [rows, sortMode]);
+
+  useEffect(() => {
+    if (loading || restoredScrollRef.current) return;
+    const scrollTop = savedHallStateRef.current?.scrollTop ?? 0;
+    if (scrollTop <= 0) {
+      restoredScrollRef.current = true;
+      return;
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        restoreHallScrollTop(scrollTop);
+        restoredScrollRef.current = true;
+      });
+    });
+  }, [loading, visibleRows.length]);
 
   const completedVisibleRows = useMemo(() => {
     return visibleRows.filter(
@@ -357,19 +422,38 @@ function HallPageContent() {
               }
             }}
             placeholder="#DDoS"
-            className="ml-2 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
+            className="ml-2 w-32 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
           />
         </label>
 
         <label className="text-sm text-stone-700">
-          年份
+          類型
           <select
-            value={yearOrder}
-            onChange={(e) => setYearOrder(e.target.value as "asc" | "desc")}
+            value={archaeologyFilter}
+            onChange={(e) =>
+              setArchaeologyFilter(e.target.value as "all" | "archaeology")
+            }
             className="ml-2 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
           >
-            <option value="desc">新到舊</option>
-            <option value="asc">舊到新</option>
+            <option value="all">全部題目</option>
+            <option value="archaeology">僅考古</option>
+          </select>
+        </label>
+
+        <label className="text-sm text-stone-700">
+          排序
+          <select
+            value={sortMode}
+            onChange={(e) =>
+              setSortMode(
+                e.target.value as "year-desc" | "year-asc" | "unfinished-first"
+              )
+            }
+            className="ml-2 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
+          >
+            <option value="year-desc">年份新到舊</option>
+            <option value="year-asc">年份舊到新</option>
+            <option value="unfinished-first">未完成優先</option>
           </select>
         </label>
 
@@ -456,6 +540,7 @@ function HallPageContent() {
               <div className="flex items-start justify-between gap-3">
                 <Link
                   href={`/practice/${r.id}`}
+                  onClick={() => persistHallScroll()}
                   className="group flex-1 transition hover:opacity-90"
                 >
                   <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
@@ -466,6 +551,11 @@ function HallPageContent() {
                     <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800">
                       {r.score || 0} 分
                     </span>
+                    {r.isArchaeology && (
+                      <span className="rounded-full bg-orange-100 px-2 py-0.5 font-medium text-orange-800">
+                        考古
+                      </span>
+                    )}
                     {r.imageUrl && (
                       <span className="text-stone-400">含題目附圖</span>
                     )}

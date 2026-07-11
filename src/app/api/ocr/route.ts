@@ -16,8 +16,32 @@ const OCR_PROMPT = `你是文字辨識助手。請把圖片中的考題文字完
 1) 只輸出辨識出的文字本身，不要任何說明、前言或 markdown。
 2) 保留題目原本的分段與編號（例如（一）（二）、1. 2.）。
 3) 使用繁體中文輸出；英文與數字照原樣保留。
-4) 若圖片中有與題目無關的頁眉、頁碼、浮水印，請忽略。
-5) 若完全無法辨識出文字，輸出空字串。`;
+4) 中文語句中的標點使用全形（，；。：（））。
+5) 若圖片中有與題目無關的頁眉、頁碼、浮水印，請忽略。
+6) 若完全無法辨識出文字，輸出空字串。`;
+
+const CJK_RE =
+  /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/;
+
+const HALF_TO_FULL_PUNCT: Record<string, string> = {
+  ",": "，",
+  ";": "；",
+  ".": "。",
+  ":": "：",
+};
+
+/**
+ * 半形標點正規化為全形：括號一律轉換；逗號/分號/句號/冒號只在接於中日韓字元
+ * 之後時轉換，避免破壞小數（3.14）、時間（10:30）、英文句子等。
+ */
+function normalizeOcrPunctuation(input: string): string {
+  return input
+    .replace(/\(/g, "（")
+    .replace(/\)/g, "）")
+    .replace(/([\s\S])([,;.:])/g, (match, prev: string, punct: string) =>
+      CJK_RE.test(prev) ? `${prev}${HALF_TO_FULL_PUNCT[punct]}` : match
+    );
+}
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -98,7 +122,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({ text });
+    return NextResponse.json({ text: normalizeOcrPunctuation(text) });
   } catch (e) {
     const message = e instanceof Error ? e.message : "OCR 辨識失敗";
     const busy =

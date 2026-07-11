@@ -16,6 +16,8 @@ type UpdateQuestionBody = {
   subject?: string;
   year?: number;
   score?: number;
+  imageUrl?: string | null;
+  isArchaeology?: boolean;
 };
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -149,6 +151,18 @@ export async function PUT(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "score must be valid" }, { status: 400 });
     }
     updates.score = body.score;
+  }
+
+  // imageUrl 可設定也可清除（傳 null 或空字串代表移除附圖）
+  if ("imageUrl" in body) {
+    updates.imageUrl =
+      typeof body.imageUrl === "string" && body.imageUrl.trim().length > 0
+        ? body.imageUrl.trim()
+        : null;
+  }
+
+  if ("isArchaeology" in body) {
+    updates.isArchaeology = body.isArchaeology === true;
   }
 
   if (Object.keys(updates).length === 0) {

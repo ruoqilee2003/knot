@@ -13,6 +13,7 @@ type Card = {
   createdAt: unknown;
   rememberCount: number;
   forgetCount: number;
+  important: boolean;
 };
 
 function flashcardsToMarkdown(cards: Card[]): string {
@@ -22,7 +23,8 @@ function flashcardsToMarkdown(cards: Card[]): string {
         `## ${idx + 1}. ${card.front}`,
         "",
         card.subject ? `> 考科：${card.subject}` : null,
-        card.subject ? "" : null,
+        card.important ? "> 重要（考古題字卡）" : null,
+        card.subject || card.important ? "" : null,
         card.back,
         "",
       ]
@@ -64,6 +66,7 @@ export default function FlashcardsPage() {
         createdAt: x.createdAt ?? null,
         rememberCount: typeof x.rememberCount === "number" ? x.rememberCount : 0,
         forgetCount: typeof x.forgetCount === "number" ? x.forgetCount : 0,
+        important: x.important === true,
       }));
       setCards(list);
     } catch (e) {
@@ -260,6 +263,11 @@ export default function FlashcardsPage() {
                   <p className="text-xs font-medium text-stone-500">
                     {c.subject}
                   </p>
+                )}
+                {c.important && (
+                  <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-medium text-orange-800">
+                    重要
+                  </span>
                 )}
                 {(c.rememberCount > 0 || c.forgetCount > 0) && (
                   <span className="flex items-center gap-1.5 text-[11px]">

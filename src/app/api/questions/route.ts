@@ -25,6 +25,7 @@ type QuestionDoc = {
   latestAttemptStatus?: string;
   latestAttemptKeywords?: string[];
   latestAttemptKeywordDisplay?: string[];
+  isArchaeology?: boolean;
 };
 
 function getCreatedAtMillis(value: unknown): number {
@@ -45,6 +46,7 @@ type QuestionBody = {
   year?: number;
   score?: number;
   imageUrl?: string | null;
+  isArchaeology?: boolean;
   allowDuplicate?: boolean;
 };
 
@@ -55,6 +57,9 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const subject = searchParams.get("subject")?.trim() ?? "";
     const keyword = normalizeKeyword(searchParams.get("keyword") ?? "");
+    const archaeologyOnly =
+      searchParams.get("archaeology") === "1" ||
+      searchParams.get("archaeology") === "true";
 
     let query: FirebaseFirestore.Query = adminDb.collection("questions");
     if (subject) {
@@ -88,6 +93,10 @@ export async function GET(request: Request) {
         .get();
       const allowedIds = new Set(attemptsWithKeyword.docs.map((doc) => doc.id));
       docs = docs.filter((doc) => allowedIds.has(doc.id));
+    }
+
+    if (archaeologyOnly) {
+      docs = docs.filter((doc) => doc.isArchaeology === true);
     }
 
     // 狀態與關鍵字優先使用 question 文件上的鏡射欄位（attempts PUT 時會同步），
@@ -156,6 +165,7 @@ export async function GET(request: Request) {
         score: doc.score ?? 100,
         questionText: doc.questionText ?? doc.title ?? "",
         imageUrl: doc.imageUrl ?? null,
+        isArchaeology: doc.isArchaeology === true,
         createdAt: doc.createdAt ?? null,
         latestAttemptStatus,
         latestKeywords,
@@ -198,6 +208,7 @@ export async function POST(request: Request) {
       ? body.imageUrl.trim()
       : null;
   const allowDuplicate = body.allowDuplicate === true;
+  const isArchaeology = body.isArchaeology === true;
 
   if (!subject || (!questionText && !title)) {
     return NextResponse.json(
@@ -257,6 +268,7 @@ export async function POST(request: Request) {
       score,
       questionText: normalizedQuestionText,
       imageUrl,
+      isArchaeology,
       createdAt: FieldValue.serverTimestamp(),
     };
 

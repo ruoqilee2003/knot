@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useParams } from "next/navigation";
@@ -14,10 +14,15 @@ import {
   parseKeywordInput,
   sanitizeKeyword,
 } from "@/lib/keywords";
+import {
+  isPersistableImageUrl,
+  normalizeLocalImagePath,
+} from "@/lib/local-image";
 
 type Question = {
   subject: string;
   year: number;
+  score: number;
   questionText: string;
   imageUrl: string | null;
 };
@@ -91,7 +96,9 @@ export default function PracticePage() {
   const [keywordOptions, setKeywordOptions] = useState<string[]>([]);
   const [keywordLoading, setKeywordLoading] = useState(false);
   const [answerFile, setAnswerFile] = useState<File | null>(null);
-  const [answerPreview, setAnswerPreview] = useState<string | null>(null);
+  const [answerImagePath, setAnswerImagePath] = useState("");
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [remoteImageUrl, setRemoteImageUrl] = useState<string | null>(null);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -130,14 +137,20 @@ export default function PracticePage() {
     flashcards_ready: "已生成字卡",
   };
 
+  const normalizedAnswerImagePath = useMemo(
+    () => normalizeLocalImagePath(answerImagePath),
+    [answerImagePath]
+  );
+  const displayPreview =
+    filePreviewUrl ?? normalizedAnswerImagePath ?? remoteImageUrl;
+
   useEffect(() => {
     if (!answerFile) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAnswerPreview(null);
+      setFilePreviewUrl(null);
       return;
     }
     const url = URL.createObjectURL(answerFile);
-    setAnswerPreview(url);
+    setFilePreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [answerFile]);
 
@@ -165,6 +178,7 @@ export default function PracticePage() {
         setQuestion({
           subject: String(d.subject ?? ""),
           year: Number(d.year ?? 0),
+          score: Number(d.score ?? 100),
           questionText: String(d.questionText ?? d.title ?? ""),
           imageUrl: d.imageUrl ? String(d.imageUrl) : null,
         });
@@ -201,7 +215,13 @@ export default function PracticePage() {
           };
           if (cancelled) return;
           if (typeof parsed.text === "string") setAnswerText(parsed.text);
-          if (parsed.imageUrl) setAnswerPreview(parsed.imageUrl);
+          if (typeof parsed.imageUrl === "string" && parsed.imageUrl) {
+            if (parsed.imageUrl.startsWith("/")) {
+              setAnswerImagePath(parsed.imageUrl);
+            } else if (parsed.imageUrl.startsWith("http")) {
+              setRemoteImageUrl(parsed.imageUrl);
+            }
+          }
           if (parsed.analysis) setAnalysis(parsed.analysis);
           if (parsed.status) {
             setAttemptStatus(parsed.status);
@@ -242,7 +262,13 @@ export default function PracticePage() {
           imageUrl?: string | null;
         };
         if (typeof parsed.text === "string") setAnswerText(parsed.text);
-        if (parsed.imageUrl) setAnswerPreview(parsed.imageUrl);
+        if (typeof parsed.imageUrl === "string" && parsed.imageUrl) {
+          if (parsed.imageUrl.startsWith("/")) {
+            setAnswerImagePath(parsed.imageUrl);
+          } else if (parsed.imageUrl.startsWith("http")) {
+            setRemoteImageUrl(parsed.imageUrl);
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -364,6 +390,18 @@ export default function PracticePage() {
     setKeywords((prev) => prev.filter((item) => item !== value));
   }, []);
 
+  // 建議關鍵字：既有關鍵字扣掉已選的，最多顯示 12 個
+  const suggestedKeywords = useMemo(() => {
+    return keywordOptions
+      .filter(
+        (item) =>
+          !keywords.some(
+            (chosen) => normalizeKeyword(chosen) === normalizeKeyword(item)
+          )
+      )
+      .slice(0, 12);
+  }, [keywordOptions, keywords]);
+
   const savePersonalNote = useCallback(async () => {
     if (!id || !question) return;
     const body = personalNoteText.trim();
@@ -412,6 +450,8 @@ export default function PracticePage() {
   }, [id, question, personalNoteText, mergeKeywords, keywords, keywordInput]);
 
   const getPersistableImageUrl = useCallback(async () => {
+    const local = normalizeLocalImagePath(answerImagePath);
+    if (local) return local;
     if (answerFile) {
       const storage = getFirebaseStorage();
       const path = `drafts/${id}/${crypto.randomUUID()}_${answerFile.name.replace(/[^\w.\-]/g, "_")}`;
@@ -419,11 +459,15 @@ export default function PracticePage() {
       await uploadBytes(storageRef, answerFile);
       return await getDownloadURL(storageRef);
     }
-    if (answerPreview?.startsWith("http")) {
-      return answerPreview;
+    if (isPersistableImageUrl(remoteImageUrl)) {
+      return remoteImageUrl;
     }
     return null;
-  }, [id, answerFile, answerPreview]);
+  }, [id, answerFile, answerImagePath, remoteImageUrl]);
+
+  const getDraftImageUrl = useCallback(() => {
+    return normalizedAnswerImagePath ?? remoteImageUrl;
+  }, [normalizedAnswerImagePath, remoteImageUrl]);
 
   const syncDraftToFirestore = useCallback(
     async (payload: DraftSyncPayload) => {
@@ -434,16 +478,18 @@ export default function PracticePage() {
         },
         body: JSON.stringify(payload),
       });
+      const data = (await response.json().catch(() => null)) as
+        | { error?: string; status?: DraftSyncPayload["status"] }
+        | null;
       if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
         throw new Error(data?.error || "Firestore 同步失敗");
       }
       lastSyncedSnapshotRef.current = JSON.stringify({
         text: payload.text,
         keywords: payload.keywordDisplay,
       });
+      // 伺服器有狀態防護（有批改結果時不會降回 draft/completed），以回傳值為準
+      return data?.status ?? payload.status;
     },
     [id]
   );
@@ -456,12 +502,12 @@ export default function PracticePage() {
         draftKey(id),
         JSON.stringify({
           text: answerText,
-          imageUrl: answerPreview?.startsWith("http") ? answerPreview : null,
+          imageUrl: getDraftImageUrl(),
         })
       );
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [id, answerText, answerPreview, readOnly]);
+  }, [id, answerText, getDraftImageUrl, readOnly]);
 
   useEffect(() => {
     if (!id || !initialLoadedRef.current || analyzing || readOnly) return;
@@ -471,7 +517,7 @@ export default function PracticePage() {
       try {
         await syncDraftToFirestore({
           text: answerText,
-          imageUrl: answerPreview?.startsWith("http") ? answerPreview : null,
+          imageUrl: getDraftImageUrl(),
           status: attemptStatus,
           errorMessage: null,
           keywords,
@@ -489,7 +535,7 @@ export default function PracticePage() {
     keywords,
     attemptStatus,
     analyzing,
-    answerPreview,
+    getDraftImageUrl,
     readOnly,
     syncDraftToFirestore,
   ]);
@@ -503,7 +549,7 @@ export default function PracticePage() {
       const payload = { text: answerText, imageUrl };
       localStorage.setItem(draftKey(id), JSON.stringify(payload));
 
-      await syncDraftToFirestore({
+      const savedStatus = await syncDraftToFirestore({
         ...payload,
         status: "draft",
         errorMessage: null,
@@ -514,7 +560,7 @@ export default function PracticePage() {
       setDraftSavedAt(new Date().toLocaleString());
       setKeywords(normalizedKeywords);
       await ensureKeywordCollection(normalizedKeywords);
-      setAttemptStatus("draft");
+      setAttemptStatus(savedStatus);
       showToast("草稿已儲存");
     } catch (e) {
       setApiError(
@@ -538,7 +584,7 @@ export default function PracticePage() {
     try {
       const imageUrl = await getPersistableImageUrl();
       const normalizedKeywords = applyPendingKeywords();
-      await syncDraftToFirestore({
+      const savedStatus = await syncDraftToFirestore({
         text: answerText,
         imageUrl,
         status: "completed",
@@ -548,7 +594,7 @@ export default function PracticePage() {
       });
       setKeywords(normalizedKeywords);
       await ensureKeywordCollection(normalizedKeywords);
-      setAttemptStatus("completed");
+      setAttemptStatus(savedStatus);
       showToast("已標記完成（仍可繼續修改）");
     } catch (e) {
       setApiError(e instanceof Error ? e.message : "標記完成失敗");
@@ -566,8 +612,9 @@ export default function PracticePage() {
     if (!question || !id) return;
     const hasText = answerText.trim().length > 0;
     const hasFile = !!answerFile;
-    if (!hasText && !hasFile) {
-      setApiError("請輸入文字或上傳手寫答案圖片");
+    const localAnswerImage = normalizeLocalImagePath(answerImagePath);
+    if (!hasText && !hasFile && !localAnswerImage) {
+      setApiError("請輸入文字、填寫作答附圖路徑，或上傳手寫答案圖片");
       return;
     }
     setApiError(null);
@@ -588,10 +635,12 @@ export default function PracticePage() {
         body: JSON.stringify({
           questionText: question.questionText,
           answerText: hasText ? answerText : undefined,
+          answerImageUrl: localAnswerImage ?? undefined,
           answerImageBase64,
           answerImageMimeType,
           subject: question.subject,
           year: question.year,
+          score: question.score,
         }),
       });
       const data = (await res.json()) as AnalysisResult & { error?: string };
@@ -632,9 +681,7 @@ export default function PracticePage() {
         await syncDraftToFirestore({
           text: answerText,
           imageUrl:
-            answerPreview && answerPreview.startsWith("http")
-              ? answerPreview
-              : null,
+            (await getPersistableImageUrl()) ?? getDraftImageUrl(),
           status: "analyze_failed",
           errorMessage: message,
           keywords: mergeKeywords(keywords, parseKeywordInput(keywordInput)),
@@ -651,7 +698,7 @@ export default function PracticePage() {
     question,
     answerText,
     answerFile,
-    answerPreview,
+    answerImagePath,
     id,
     applyPendingKeywords,
     ensureKeywordCollection,
@@ -659,6 +706,7 @@ export default function PracticePage() {
     keywords,
     keywordInput,
     getPersistableImageUrl,
+    getDraftImageUrl,
     syncDraftToFirestore,
   ]);
 
@@ -684,8 +732,7 @@ export default function PracticePage() {
       }
       await syncDraftToFirestore({
         text: answerText,
-        imageUrl:
-          answerPreview && answerPreview.startsWith("http") ? answerPreview : null,
+        imageUrl: getDraftImageUrl(),
         status: "flashcards_ready",
         errorMessage: null,
         analysis,
@@ -704,7 +751,7 @@ export default function PracticePage() {
     id,
     question?.subject,
     answerText,
-    answerPreview,
+    getDraftImageUrl,
     mergeKeywords,
     keywords,
     keywordInput,
@@ -718,8 +765,7 @@ export default function PracticePage() {
     try {
       await syncDraftToFirestore({
         text: answerText,
-        imageUrl:
-          answerPreview && answerPreview.startsWith("http") ? answerPreview : null,
+        imageUrl: getDraftImageUrl(),
         status: "completed",
         errorMessage: null,
         keywords,
@@ -735,7 +781,7 @@ export default function PracticePage() {
     } finally {
       setClearBusy(false);
     }
-  }, [id, answerText, answerPreview, keywords, syncDraftToFirestore]);
+  }, [id, answerText, getDraftImageUrl, keywords, syncDraftToFirestore]);
 
   const clearQuestionFlashcards = useCallback(async () => {
     if (!id) return;
@@ -757,10 +803,7 @@ export default function PracticePage() {
         const nextStatus = analysis ? "analyzed" : "completed";
         await syncDraftToFirestore({
           text: answerText,
-          imageUrl:
-            answerPreview && answerPreview.startsWith("http")
-              ? answerPreview
-              : null,
+          imageUrl: getDraftImageUrl(),
           status: nextStatus,
           errorMessage: null,
           keywords,
@@ -780,7 +823,7 @@ export default function PracticePage() {
     attemptStatus,
     analysis,
     answerText,
-    answerPreview,
+    getDraftImageUrl,
     keywords,
     syncDraftToFirestore,
   ]);
@@ -792,8 +835,8 @@ export default function PracticePage() {
       const normalizedAnswer = answerText.trim();
       const rawAnswerSection = normalizedAnswer
         ? normalizedAnswer
-        : answerPreview
-          ? "（本次作答未輸入文字，請參考上傳圖片作答）"
+        : displayPreview
+          ? "（本次作答未輸入文字，請參考附圖作答）"
           : "（本次未填寫文字作答）";
       const sections = [`【考題重點】\n- ${analysis.examKeyPoints.join("\n- ")}`];
       if (analysis.answerFeedback) {
@@ -832,7 +875,7 @@ export default function PracticePage() {
     } finally {
       setNoteBusy(false);
     }
-  }, [analysis, question, id, answerText, answerPreview]);
+  }, [analysis, question, id, answerText, displayPreview]);
 
   const answerWordCount = countWithoutWhitespace(answerText);
   const updateSelectedWordCount = useCallback(() => {
@@ -967,16 +1010,10 @@ export default function PracticePage() {
                     void addSingleKeyword(keywordInput);
                   }
                 }}
-                list="keyword-suggestions"
                 placeholder="#DDoS"
                 className="min-w-[220px] flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2 disabled:bg-stone-100"
                 disabled={analyzing || readOnly}
               />
-              <datalist id="keyword-suggestions">
-                {keywordOptions.map((item) => (
-                  <option key={item} value={`#${item}`} />
-                ))}
-              </datalist>
               <button
                 type="button"
                 onClick={() => void addSingleKeyword(keywordInput)}
@@ -985,33 +1022,27 @@ export default function PracticePage() {
               >
                 新增關鍵字
               </button>
-              <select
-                value=""
-                onChange={(e) => {
-                  const selected = e.target.value;
-                  if (!selected) return;
-                  void addSingleKeyword(selected);
-                }}
-                disabled={analyzing || readOnly || keywordOptions.length === 0}
-                className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-xs text-stone-700 disabled:opacity-50"
-              >
-                <option value="">選擇既有關鍵字</option>
-                {keywordOptions
-                  .filter(
-                    (item) =>
-                      !keywords.some(
-                        (chosen) => normalizeKeyword(chosen) === normalizeKeyword(item)
-                      )
-                  )
-                  .map((item) => (
-                    <option key={item} value={item}>
-                      #{item}
-                    </option>
-                  ))}
-              </select>
             </div>
-            {keywordLoading && (
-              <p className="mt-1 text-xs text-stone-500">讀取關鍵字中…</p>
+            {!readOnly && keywordInput.trim() && suggestedKeywords.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs text-stone-500">
+                  符合的既有關鍵字
+                  {keywordLoading && "（讀取中…）"}
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {suggestedKeywords.map((item) => (
+                    <button
+                      type="button"
+                      key={item}
+                      onClick={() => void addSingleKeyword(item)}
+                      disabled={analyzing}
+                      className="rounded-full border border-dashed border-stone-300 bg-white px-2 py-0.5 text-xs text-stone-600 transition hover:border-stone-500 hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                    >
+                      + #{item}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
             {keywords.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1077,6 +1108,34 @@ export default function PracticePage() {
 
           <div className="mt-4">
             <label className="text-sm font-medium text-stone-700">
+              作答附圖（選填，本機 ERD / 架構圖）
+            </label>
+            <input
+              type="text"
+              value={answerImagePath}
+              onChange={(e) => setAnswerImagePath(e.target.value)}
+              placeholder="例如：/answer-images/db-2026-erd.png"
+              className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2 disabled:bg-stone-100"
+              disabled={analyzing || readOnly}
+            />
+            <p className="mt-1 text-xs text-stone-500">
+              把圖片放進專案的 public/answer-images/ 資料夾後填入路徑。AI 批改時會讀取這張圖（不需 Firebase Storage）。
+            </p>
+            {displayPreview && !filePreviewUrl && (
+              <div className="relative mt-3 h-48 w-full max-w-md overflow-hidden rounded-lg border border-stone-200 bg-white">
+                <Image
+                  src={displayPreview}
+                  alt="作答附圖預覽"
+                  fill
+                  className="object-contain"
+                  unoptimized
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <label className="text-sm font-medium text-stone-700">
               手寫答案圖片（選填）
             </label>
             <input
@@ -1086,11 +1145,11 @@ export default function PracticePage() {
               disabled={analyzing || readOnly}
               onChange={(e) => setAnswerFile(e.target.files?.[0] ?? null)}
             />
-            {answerPreview && (
+            {filePreviewUrl && (
               <div className="relative mt-3 h-40 w-full max-w-md overflow-hidden rounded-lg border border-stone-200 bg-white">
                 <Image
-                  src={answerPreview}
-                  alt="作答預覽"
+                  src={filePreviewUrl}
+                  alt="手寫答案預覽"
                   fill
                   className="object-contain"
                   unoptimized

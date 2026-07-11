@@ -188,7 +188,6 @@ export async function PUT(request: Request, context: RouteContext) {
     questionId,
     text,
     imageUrl,
-    status,
     errorMessage,
     keywords,
     keywordDisplay,
@@ -203,14 +202,6 @@ export async function PUT(request: Request, context: RouteContext) {
     attemptPayload.analyzedAt = FieldValue.delete();
   }
 
-  if (status === "completed") {
-    attemptPayload.completedAt = FieldValue.serverTimestamp();
-  }
-
-  if (status === "flashcards_ready") {
-    attemptPayload.flashcardsGeneratedAt = FieldValue.serverTimestamp();
-  }
-
   try {
     const questionRef = adminDb.collection("questions").doc(questionId);
     const questionSnap = await questionRef.get();
@@ -223,12 +214,33 @@ export async function PUT(request: Request, context: RouteContext) {
 
     const attemptRef = adminDb.collection("attempts").doc(questionId);
     const previousAttemptSnap = await attemptRef.get();
-    const previousKeywords = new Set(
-      normalizeKeywords(
-        (previousAttemptSnap.data() as { keywords?: string[] } | undefined)
-          ?.keywords
-      )
-    );
+    const previousData = previousAttemptSnap.data() as
+      | { keywords?: string[]; status?: unknown; analysis?: unknown }
+      | undefined;
+    const previousKeywords = new Set(normalizeKeywords(previousData?.keywords));
+
+    // 狀態防護：只要更新後仍存有批改結果，就不允許狀態降回 draft/completed
+    //（暫存、自動儲存不會覆蓋掉「已批改／已生成字卡」的鏡射徽章）
+    const previousStatus = normalizeStatus(previousData?.status);
+    const hasAnalysisAfterUpdate =
+      Boolean(analysis) ||
+      (Boolean(previousData?.analysis) && body.clearAnalysis !== true);
+    let effectiveStatus = status;
+    if (
+      (effectiveStatus === "draft" || effectiveStatus === "completed") &&
+      hasAnalysisAfterUpdate
+    ) {
+      effectiveStatus =
+        previousStatus === "flashcards_ready" ? "flashcards_ready" : "analyzed";
+    }
+
+    attemptPayload.status = effectiveStatus;
+    if (effectiveStatus === "completed") {
+      attemptPayload.completedAt = FieldValue.serverTimestamp();
+    }
+    if (effectiveStatus === "flashcards_ready" && status === "flashcards_ready") {
+      attemptPayload.flashcardsGeneratedAt = FieldValue.serverTimestamp();
+    }
 
     await attemptRef.set(
       {
@@ -246,7 +258,7 @@ export async function PUT(request: Request, context: RouteContext) {
 
     await questionRef.set(
       {
-        latestAttemptStatus: status,
+        latestAttemptStatus: effectiveStatus,
         latestAttemptUpdatedAt: FieldValue.serverTimestamp(),
         latestAttemptKeywords: keywords,
         latestAttemptKeywordDisplay: keywordDisplay,
@@ -257,7 +269,7 @@ export async function PUT(request: Request, context: RouteContext) {
     return NextResponse.json({
       ok: true,
       id: questionId,
-      status,
+      status: effectiveStatus,
       keywords,
       keywordDisplay,
     });

@@ -12,6 +12,7 @@ type Card = {
   keywords: string[];
   rememberCount: number;
   forgetCount: number;
+  important: boolean;
 };
 
 type Mode = "all" | "forgotten";
@@ -41,6 +42,7 @@ export default function FlashcardReviewPage() {
     new Set()
   );
   const [mode, setMode] = useState<Mode>("all");
+  const [importantOnly, setImportantOnly] = useState(false);
 
   const [deck, setDeck] = useState<Card[]>([]);
   const [index, setIndex] = useState(0);
@@ -76,6 +78,7 @@ export default function FlashcardReviewPage() {
               typeof x.rememberCount === "number" ? x.rememberCount : 0,
             forgetCount:
               typeof x.forgetCount === "number" ? x.forgetCount : 0,
+            important: x.important === true,
           }))
           .filter((card) => card.front && card.back);
         setCards(list);
@@ -139,8 +142,11 @@ export default function FlashcardReviewPage() {
     if (mode === "forgotten") {
       pool = pool.filter(isWeakCard);
     }
+    if (importantOnly) {
+      pool = pool.filter((card) => card.important);
+    }
     return pool;
-  }, [cards, subjectFilter, selectedKeywords, mode]);
+  }, [cards, subjectFilter, selectedKeywords, mode, importantOnly]);
 
   const toggleKeyword = useCallback((keyword: string) => {
     setSelectedKeywords((prev) => {
@@ -248,6 +254,11 @@ export default function FlashcardReviewPage() {
 
   const weakCount = useMemo(
     () => cards.filter(isWeakCard).length,
+    [cards]
+  );
+
+  const importantCount = useMemo(
+    () => cards.filter((card) => card.important).length,
     [cards]
   );
 
@@ -420,6 +431,22 @@ export default function FlashcardReviewPage() {
                 </p>
               </button>
             </div>
+            <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-stone-200 bg-white px-4 py-3">
+              <input
+                type="checkbox"
+                checked={importantOnly}
+                onChange={(e) => setImportantOnly(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-stone-300 accent-orange-600"
+              />
+              <span>
+                <span className="text-sm font-medium text-stone-800">
+                  僅重要字卡
+                </span>
+                <span className="mt-0.5 block text-xs text-stone-500">
+                  只複習考古題產生的字卡（全部共 {importantCount} 張），可與上方範圍併用
+                </span>
+              </span>
+            </label>
           </div>
 
           <div className="mt-8 flex items-center justify-between gap-4 border-t border-stone-200 pt-6">
@@ -450,6 +477,11 @@ export default function FlashcardReviewPage() {
             {current.subject && (
               <span className="ml-2 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-700">
                 {current.subject}
+              </span>
+            )}
+            {current.important && (
+              <span className="ml-2 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800">
+                重要
               </span>
             )}
             <span className="ml-3 text-xs text-emerald-600">

@@ -27,6 +27,8 @@ type Props = {
   onCreated: () => void;
 };
 
+const PRESET_SUBJECTS = ["資通網路", "資通安全", "資料庫應用", "作業系統"];
+
 type DuplicateMatch = {
   id: string;
   year: number | null;
@@ -40,6 +42,7 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
   const [year, setYear] = useState(new Date().getFullYear());
   const [score, setScore] = useState(100);
   const [questionText, setQuestionText] = useState("");
+  const [isArchaeology, setIsArchaeology] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +113,7 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
           score: Number(score) > 0 ? Number(score) : 100,
           questionText: questionText.trim(),
           imageUrl,
+          isArchaeology,
           allowDuplicate,
         }),
       });
@@ -132,6 +136,7 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
       setYear(new Date().getFullYear());
       setScore(100);
       setQuestionText("");
+      setIsArchaeology(false);
       setFile(null);
       setDuplicates([]);
       onCreated();
@@ -185,11 +190,27 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
           </div>
           <div>
             <label className="text-sm font-medium text-stone-700">科目</label>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {PRESET_SUBJECTS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setSubject(preset)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                    subject.trim() === preset
+                      ? "bg-stone-900 text-white"
+                      : "border border-stone-300 bg-white text-stone-700 hover:bg-stone-50"
+                  }`}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
             <input
-              className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-stone-900 outline-none ring-stone-400 focus:ring-2"
+              className="mt-2 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-stone-900 outline-none ring-stone-400 focus:ring-2"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              placeholder="例如：行政法"
+              placeholder="點選上方類科，或輸入新類科名稱"
             />
           </div>
           <div>
@@ -211,6 +232,15 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
               onChange={(e) => setScore(Number(e.target.value))}
             />
           </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-stone-700">
+            <input
+              type="checkbox"
+              checked={isArchaeology}
+              onChange={(e) => setIsArchaeology(e.target.checked)}
+              className="h-4 w-4 rounded border-stone-300 accent-stone-800"
+            />
+            考古（歷屆考題）
+          </label>
           <div>
             <div className="flex items-center justify-between gap-2">
               <label className="text-sm font-medium text-stone-700">

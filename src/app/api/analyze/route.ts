@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
+import { loadLocalPublicImage } from "@/lib/local-image-server";
 
 export const maxDuration = 120;
 // 批改用最新世代的 Flash（性價比檔）；名稱不可用時依序退回較舊的模型
@@ -14,10 +15,12 @@ const HIGH_DEMAND_ERROR_MESSAGE = "系統忙碌中，請再試一次";
 type AnalyzeBody = {
   questionText?: string;
   answerText?: string;
+  answerImageUrl?: string;
   answerImageBase64?: string;
   answerImageMimeType?: string;
   subject?: string;
   year?: number;
+  score?: number;
 };
 
 const ANALYSIS_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業批改助教，專長在以下考科：資通網路、資訊安全實務、資料庫應用、系統程式。
@@ -30,9 +33,11 @@ const ANALYSIS_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業
 }
 規則：
 1) 嚴格根據題目與考科判斷，不要離題。
-2) examKeyPoints 為「考題重點」：3~6 點，依題目實際份量決定數量。每點要具體可用於答題，說明這題考的核心觀念、答題必須涵蓋的架構或關鍵詞，而不是空泛的方向；若考生答案有明顯遺漏或錯誤，直接在對應重點中指出應補上什麼。
-3) flashcards 數量彈性（2~8 張），依這題實際考到的內容決定：每個重要名詞、協定、機制或流程各出一張，不要為了湊數而重複，也不要遺漏題目核心概念。每張卡正面是名詞或關鍵問句，背面是精簡但完整的答案重點。
-4) 全部使用繁體中文。不要產生示範文。`;
+2) 不要離開考生答案寫到的東西，不須另外新增相關知識；考題重點與字卡內容僅能從題目與考生實際作答中萃取，勿補充考生未提及的延伸知識。
+3) examKeyPoints 為「考題重點」：數量依題目配分決定（2~6 點，配分越高可稍多）。每點要具體可用於答題，說明這題考的核心觀念、答題必須涵蓋的架構或關鍵詞，而不是空泛的方向；若考生答案有明顯遺漏或錯誤，直接在對應重點中指出應補上什麼。
+4) flashcards 數量亦依配分決定（2~6 張，配分越高可稍多）。優先從考生答案與題目列出重要名詞各出一張，再補該名詞的特性、機制或流程；不要為了湊數而重複，也不要遺漏題目與答案中的核心概念。每張卡正面是名詞或關鍵問句，背面是精簡但完整的答案重點。
+5) 英文專有名詞第一次出現時必須同時寫出全名與縮寫，例如「入侵偵測系統（Intrusion Detection System, IDS）」；字卡正面若是英文縮寫名詞，需附上全名。
+6) 全部使用繁體中文。不要產生示範文。`;
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -53,10 +58,12 @@ export async function POST(request: NextRequest) {
   const {
     questionText,
     answerText,
+    answerImageUrl,
     answerImageBase64,
     answerImageMimeType,
     subject,
     year,
+    score,
   } = body;
 
   if (!questionText || typeof questionText !== "string") {
@@ -70,14 +77,18 @@ export async function POST(request: NextRequest) {
   const normalizedAnswerImageMimeType =
     typeof answerImageMimeType === "string" ? answerImageMimeType : "";
 
+  const normalizedAnswerImageUrl =
+    typeof answerImageUrl === "string" ? answerImageUrl.trim() : "";
+
   const hasText = normalizedAnswerText.length > 0;
-  const hasImage =
+  const hasUploadedImage =
     normalizedAnswerImageBase64.length > 0 &&
     normalizedAnswerImageMimeType.length > 0;
+  const hasLocalImage = normalizedAnswerImageUrl.startsWith("/");
 
-  if (!hasText && !hasImage) {
+  if (!hasText && !hasUploadedImage && !hasLocalImage) {
     return NextResponse.json(
-      { error: "請提供文字答案或手寫圖片（其一或兩者皆可）" },
+      { error: "請提供文字答案、作答附圖或手寫圖片（其一或兩者皆可）" },
       { status: 400 }
     );
   }
@@ -88,6 +99,9 @@ export async function POST(request: NextRequest) {
   const meta: string[] = [];
   if (subject) meta.push(`科目：${subject}`);
   if (year != null) meta.push(`年份：${year}`);
+  if (typeof score === "number" && Number.isFinite(score) && score > 0) {
+    meta.push(`配分：${score} 分（examKeyPoints 與 flashcards 數量請依配分在 2~6 之間決定）`);
+  }
 
   const userParts: Part[] = [];
 
@@ -98,7 +112,7 @@ ${meta.length ? meta.join("\n") + "\n\n" : ""}【題目】
 ${questionText}
 
 【作答說明】
-若附有手寫圖片，請先完整 OCR 辨識手寫內容，再與文字欄併讀（文字與圖片可能互補）。若僅有圖片，以 OCR 結果為考生答案。`,
+若附有手寫圖片，請先完整 OCR 辨識手寫內容，再與文字欄併讀（文字與圖片可能互補）。若僅有圖片，以 OCR 結果為考生答案。若附有作答附圖（如 ERD），請一併分析圖中內容並納入批改。`,
   });
 
   if (hasText) {
@@ -107,7 +121,7 @@ ${questionText}
     });
   }
 
-  if (hasImage) {
+  if (hasUploadedImage) {
     userParts.push({
       inlineData: {
         mimeType: normalizedAnswerImageMimeType,
@@ -117,6 +131,21 @@ ${questionText}
     userParts.push({
       text: "上圖為考生手寫答案，請先 OCR 再一併批改。",
     });
+  }
+
+  if (hasLocalImage) {
+    const answerImage = await loadLocalPublicImage(normalizedAnswerImageUrl);
+    if (answerImage) {
+      userParts.push({
+        inlineData: {
+          mimeType: answerImage.mimeType,
+          data: answerImage.data,
+        },
+      });
+      userParts.push({
+        text: "上圖為考生作答附圖（例如 ERD、架構圖或流程圖），請分析圖中實體、關聯與設計是否正確，並與文字答案一併批改。",
+      });
+    }
   }
 
   const callModel = async (targetModel: string) => {
@@ -180,7 +209,7 @@ ${questionText}
     )
       .map((item) => (typeof item === "string" ? item.trim() : ""))
       .filter(Boolean)
-      .slice(0, 8);
+      .slice(0, 6);
 
     const flashcards = (Array.isArray(parsed.flashcards) ? parsed.flashcards : [])
       .map((item) => {
@@ -197,7 +226,7 @@ ${questionText}
         return { front, back };
       })
       .filter((item): item is { front: string; back: string } => item !== null)
-      .slice(0, 10);
+      .slice(0, 6);
 
     if (examKeyPoints.length === 0) {
       return NextResponse.json(

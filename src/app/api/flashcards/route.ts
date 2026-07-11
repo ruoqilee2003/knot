@@ -139,6 +139,10 @@ export async function POST(request: Request) {
   }
 
   try {
+    const questionSnap = await adminDb.collection("questions").doc(questionId).get();
+    const important =
+      questionSnap.exists && questionSnap.data()?.isArchaeology === true;
+
     const existingSnapshot = await adminDb
       .collection("flashcards")
       .where("questionId", "==", questionId)
@@ -179,6 +183,7 @@ export async function POST(request: Request) {
         subject,
         front: card.front,
         back: card.back,
+        important,
         createdAt: FieldValue.serverTimestamp(),
       });
     }

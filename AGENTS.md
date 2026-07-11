@@ -30,20 +30,20 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ## API routes（`src/app/api/`，皆 `runtime = "nodejs"`）
 
-- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立）
-- `attempts/[questionId]`：一題一份作答紀錄（文件 ID = questionId）。PUT 會同步鏡射 `latestAttemptStatus`/`latestAttemptKeywords` 回 questions，且只對「新加入」的關鍵字遞增 usageCount（勿改壞，自動儲存會頻繁 PUT）；帶 `clearAnalysis: true` 可刪除已存的批改結果
-- `analyze`：Gemini 批改（`GEMINI_MODEL`，Pro 級重推理），輸出 `{ examKeyPoints: string[](3~6), flashcards: {front,back}[](2~8) }`，數量彈性、超限截斷。舊資料可能還有 `answerFeedback`/`improvementSuggestions`（型別中為 optional）
+- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；支援 `?archaeology=1` 篩選考古題；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立）
+- `attempts/[questionId]`：一題一份作答紀錄（文件 ID = questionId）。PUT 會同步鏡射 `latestAttemptStatus`/`latestAttemptKeywords` 回 questions，且只對「新加入」的關鍵字遞增 usageCount（勿改壞，自動儲存會頻繁 PUT）；帶 `clearAnalysis: true` 可刪除已存的批改結果。**狀態防護**：只要 attempt 仍存有 analysis，PUT 送 `draft`/`completed` 會被伺服器升回 `analyzed`/`flashcards_ready`（避免自動儲存/暫存把「已批改」徽章洗掉），實際生效狀態以回應的 `status` 為準；`scripts/repair-attempt-status.mjs` 可修復歷史錯誤鏡射
+- `analyze`：Gemini 批改（`GEMINI_MODEL`），輸出 `{ examKeyPoints: string[](2~6), flashcards: {front,back}[](2~6) }`，依題目配分決定數量、超限截斷。規則要求僅從考生答案萃取、不額外補充知識。可帶 `answerImageUrl`（本機 `/...` 路徑）或 `answerImageBase64`（手寫圖），並傳 `score` 供配分參考
 - `ocr`：題目圖片辨識文字（`GEMINI_OCR_MODEL`，最便宜的 Flash-Lite），圖片只進記憶體不儲存，新增題目視窗的「掃描圖片辨識文字」按鈕會呼叫
-- `flashcards`：GET 列表（會批次附帶各題 attempts 的 `keywordDisplay` 供複習頁篩選）/ POST 寫入（同題同內容去重）/ `DELETE ?questionId=` 清除該題全部字卡
+- `flashcards`：GET 列表（會批次附帶各題 attempts 的 `keywordDisplay` 供複習頁篩選）/ POST 寫入（同題同內容去重；若題目 `isArchaeology` 為 true 則字卡寫入 `important: true`）/ `DELETE ?questionId=` 清除該題全部字卡
 - `flashcards/[id]`：PUT 帶 `review: "remember" | "forget"` 會遞增 `rememberCount`/`forgetCount` 並更新 `lastReviewedAt`（優先於其他欄位更新）；一般 PUT 更新 front/back；DELETE 刪單張
 - `keypoints`：GET 彙整已批改 attempts 的 `analysis.examKeyPoints`，批次補題目文字（getAll，勿改成 N+1）
 - `study-notes`、`personal-notes`、`keywords`、`export/questions`、`stats`、`auth/login`、`auth/logout`
 
 ## Firestore collections
 
-- `questions`：題目 + 鏡射欄位（`latestAttemptStatus`、`latestAttemptKeywords`、`latestAttemptKeywordDisplay`）
+- `questions`：題目 + 鏡射欄位（`latestAttemptStatus`、`latestAttemptKeywords`、`latestAttemptKeywordDisplay`）+ `isArchaeology`（考古標籤）
 - `attempts`：作答紀錄（ID = questionId），status 流轉：`draft → completed → analyzed → flashcards_ready`（另有 `analyze_failed`）
-- `flashcards`：字卡（含 `rememberCount`/`forgetCount`/`lastReviewedAt` 複習統計，舊卡可能沒有這些欄位）
+- `flashcards`：字卡（含 `rememberCount`/`forgetCount`/`lastReviewedAt` 複習統計、`important` 考古題字卡標記，舊卡可能沒有這些欄位）
 - `studyNotes`（解答批改）、`personalNotes`（重點筆記）、`keywords`（ID = 正規化關鍵字，含 usageCount）
 
 ## 認證
@@ -58,6 +58,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 關鍵字一律經過 `src/lib/keywords.ts` 正規化（去 `#`、trim、比對用小寫；顯示用 `keywordDisplay`），新程式碼務必沿用
 - 題目相似度比對在 `src/lib/similarity.ts`（去空白標點後做字元 bigram Jaccard）
 - 錯誤處理模式：API 回 `{ error: string }`，client 統一 `payload?.error || 中文 fallback`
-- 圖片上傳（題目附圖、手寫答案）目前保留但使用者暫不使用；批改仍支援 base64 圖片送 Gemini
+- 作答附圖（ERD 等）不走 Firebase Storage：圖片放 `public/answer-images/`，作答頁填本機路徑（`src/lib/local-image.ts` 的 `normalizeLocalImagePath` 正規化後存進 attempts 的 `imageUrl`）；批改時 client 帶 `answerImageUrl` 給 `api/analyze` 讀檔送 Gemini。手寫答案圖片上傳（Storage）保留但使用者暫不使用；批改仍支援 base64 圖片送 Gemini
 - 舊資料相容：部分 questions 還有 legacy `latestDraft` 欄位，`scripts/migrate-attempts.mjs` 可遷移
 - `.env` 含真實金鑰，勿印出或提交
