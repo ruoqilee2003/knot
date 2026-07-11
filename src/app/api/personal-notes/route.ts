@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
+import { filterByActiveQuestions, getArchivedQuestionIds } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 import { dedupeKeywordsCaseInsensitive, normalizeKeywords } from "@/lib/keywords";
 
@@ -44,8 +45,9 @@ export async function GET(request: Request) {
           return typeof value?.toMillis === "function" ? value.toMillis() : 0;
         })();
         return right - left;
-      });
-    return NextResponse.json(notes);
+      }) as Array<{ id: string; questionId?: string }>;
+    const archivedIds = await getArchivedQuestionIds();
+    return NextResponse.json(filterByActiveQuestions(notes, archivedIds));
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch personal notes";

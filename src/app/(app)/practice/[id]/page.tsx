@@ -25,6 +25,7 @@ type Question = {
   score: number;
   questionText: string;
   imageUrl: string | null;
+  archived: boolean;
 };
 
 type PersonalNote = {
@@ -181,7 +182,11 @@ export default function PracticePage() {
           score: Number(d.score ?? 100),
           questionText: String(d.questionText ?? d.title ?? ""),
           imageUrl: d.imageUrl ? String(d.imageUrl) : null,
+          archived: d.archived === true,
         });
+        if (d.archived === true) {
+          setReadOnly(true);
+        }
       } catch (e) {
         if (!cancelled) {
           setLoadError(e instanceof Error ? e.message : "讀取題目失敗");
@@ -919,6 +924,15 @@ export default function PracticePage() {
           ← 練習大廳
         </Link>
       </div>
+      {question.archived && (
+        <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900">
+          此題已封存，僅供查閱。若要繼續練習，請至
+          <Link href="/" className="mx-1 font-medium underline">
+            練習大廳
+          </Link>
+          還原封存題庫。
+        </div>
+      )}
       <section className="border-b border-stone-200 bg-[#fffdf8] px-6 py-5">
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-stone-500">
           <span className="rounded-full bg-stone-100 px-2 py-0.5 font-medium text-stone-700">

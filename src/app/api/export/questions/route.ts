@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isQuestionArchived } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -12,6 +13,7 @@ type ExportBody = {
 type QuestionDoc = {
   questionText?: string;
   title?: string;
+  archived?: boolean;
 };
 
 type AttemptDoc = {
@@ -104,7 +106,7 @@ export async function POST(request: Request) {
       for (const id of ids) {
         const attempt = attemptsMap.get(id);
         const question = questionsMap.get(id);
-        if (!attempt || !question) continue;
+        if (!attempt || !question || isQuestionArchived(question)) continue;
         const answer = typeof attempt.text === "string" ? attempt.text.trim() : "";
         if (!answer) continue;
         const questionText = String(

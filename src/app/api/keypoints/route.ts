@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getArchivedQuestionIds, isQuestionArchived } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -56,9 +57,15 @@ export async function GET() {
       )
     );
     const textMap = new Map<string, string>();
+    const archivedIds = await getArchivedQuestionIds();
     for (const snap of questionSnaps) {
       if (!snap.exists) continue;
-      const data = snap.data() as { questionText?: string; title?: string };
+      const data = snap.data() as {
+        questionText?: string;
+        title?: string;
+        archived?: boolean;
+      };
+      if (isQuestionArchived(data) || archivedIds.has(snap.id)) continue;
       const text =
         (typeof data.questionText === "string" && data.questionText) ||
         (typeof data.title === "string" && data.title) ||
@@ -67,6 +74,7 @@ export async function GET() {
     }
 
     const items: KeyPointItem[] = raw
+      .filter((item) => textMap.has(item.questionId))
       .map((item) => ({
         ...item,
         questionText: textMap.get(item.questionId) ?? "",

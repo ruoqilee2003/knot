@@ -30,7 +30,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ## API routes（`src/app/api/`，皆 `runtime = "nodejs"`）
 
-- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；支援 `?archaeology=1` 篩選考古題；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立）
+- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；支援 `?archaeology=1` 篩選考古題；預設排除 `archived: true` 的封存題目（`?includeArchived=1` 可含封存）；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；封存題目不參與重複比對）
 - `attempts/[questionId]`：一題一份作答紀錄（文件 ID = questionId）。PUT 會同步鏡射 `latestAttemptStatus`/`latestAttemptKeywords` 回 questions，且只對「新加入」的關鍵字遞增 usageCount（勿改壞，自動儲存會頻繁 PUT）；帶 `clearAnalysis: true` 可刪除已存的批改結果。**狀態防護**：只要 attempt 仍存有 analysis，PUT 送 `draft`/`completed` 會被伺服器升回 `analyzed`/`flashcards_ready`（避免自動儲存/暫存把「已批改」徽章洗掉），實際生效狀態以回應的 `status` 為準；`scripts/repair-attempt-status.mjs` 可修復歷史錯誤鏡射
 - `analyze`：Gemini 批改（`GEMINI_MODEL`），輸出 `{ examKeyPoints: string[](2~6), flashcards: {front,back}[](2~6) }`，依題目配分決定數量、超限截斷。規則要求僅從考生答案萃取、不額外補充知識。可帶 `answerImageUrl`（本機 `/...` 路徑）或 `answerImageBase64`（手寫圖），並傳 `score` 供配分參考
 - `ocr`：題目圖片辨識文字（`GEMINI_OCR_MODEL`，最便宜的 Flash-Lite），圖片只進記憶體不儲存，新增題目視窗的「掃描圖片辨識文字」按鈕會呼叫
@@ -38,10 +38,11 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - `flashcards/[id]`：PUT 帶 `review: "remember" | "forget"` 會遞增 `rememberCount`/`forgetCount` 並更新 `lastReviewedAt`（優先於其他欄位更新）；一般 PUT 更新 front/back；DELETE 刪單張
 - `keypoints`：GET 彙整已批改 attempts 的 `analysis.examKeyPoints`，批次補題目文字（getAll，勿改成 N+1）
 - `study-notes`、`personal-notes`、`keywords`、`export/questions`、`stats`、`auth/login`、`auth/logout`
+- `archive`：GET 回傳 `{ activeCount, archivedCount }`；POST `{ action: "archiveAll" | "restoreAll" }` 批次封存/還原全部題目（資料保留，僅從各列表隱藏）。CLI：`node scripts/archive-all-questions.mjs [--dry-run] [--restore]`
 
 ## Firestore collections
 
-- `questions`：題目 + 鏡射欄位（`latestAttemptStatus`、`latestAttemptKeywords`、`latestAttemptKeywordDisplay`）+ `isArchaeology`（考古標籤）
+- `questions`：題目 + 鏡射欄位（`latestAttemptStatus`、`latestAttemptKeywords`、`latestAttemptKeywordDisplay`）+ `isArchaeology`（考古標籤）+ `archived`/`archivedAt`（封存：隱藏但不刪除）
 - `attempts`：作答紀錄（ID = questionId），status 流轉：`draft → completed → analyzed → flashcards_ready`（另有 `analyze_failed`）
 - `flashcards`：字卡（含 `rememberCount`/`forgetCount`/`lastReviewedAt` 複習統計、`important` 考古題字卡標記，舊卡可能沒有這些欄位）
 - `studyNotes`（解答批改）、`personalNotes`（重點筆記）、`keywords`（ID = 正規化關鍵字，含 usageCount）

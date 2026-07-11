@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
+import { filterByActiveQuestions, getArchivedQuestionIds } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -59,7 +60,9 @@ export async function GET() {
       }
     }
 
-    const enriched = cards.map((card) => ({
+    const archivedIds = await getArchivedQuestionIds();
+    const activeCards = filterByActiveQuestions(cards, archivedIds);
+    const enriched = activeCards.map((card) => ({
       ...card,
       keywordDisplay:
         keywordMap.get(

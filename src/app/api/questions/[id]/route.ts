@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -18,6 +19,7 @@ type UpdateQuestionBody = {
   score?: number;
   imageUrl?: string | null;
   isArchaeology?: boolean;
+  archived?: boolean;
 };
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -163,6 +165,16 @@ export async function PUT(request: Request, context: RouteContext) {
 
   if ("isArchaeology" in body) {
     updates.isArchaeology = body.isArchaeology === true;
+  }
+
+  if ("archived" in body) {
+    if (body.archived === true) {
+      updates.archived = true;
+      updates.archivedAt = FieldValue.serverTimestamp();
+    } else {
+      updates.archived = false;
+      updates.archivedAt = FieldValue.delete();
+    }
   }
 
   if (Object.keys(updates).length === 0) {

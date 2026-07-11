@@ -79,6 +79,29 @@ function HallPageContent() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectingForExport, setSelectingForExport] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [archiveStatus, setArchiveStatus] = useState<{
+    activeCount: number;
+    archivedCount: number;
+  } | null>(null);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+
+  const loadArchiveStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/archive", { method: "GET" });
+      const payload = (await response.json().catch(() => null)) as
+        | { activeCount?: number; archivedCount?: number; error?: string }
+        | null;
+      if (!response.ok) return;
+      setArchiveStatus({
+        activeCount: Number(payload?.activeCount ?? 0),
+        archivedCount: Number(payload?.archivedCount ?? 0),
+      });
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const load = useCallback(async () => {
     loadAbortRef.current?.abort();
@@ -145,10 +168,43 @@ function HallPageContent() {
     }
   }, [subjectFilter, keywordFilter, archaeologyFilter]);
 
+  const runArchiveAction = useCallback(
+    async (action: "archiveAll" | "restoreAll") => {
+      setArchiving(true);
+      setLoadError(null);
+      try {
+        const response = await fetch("/api/archive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        if (!response.ok) {
+          throw new Error(payload?.error || "封存操作失敗");
+        }
+        setArchiveDialogOpen(false);
+        setRestoreDialogOpen(false);
+        await Promise.all([load(), loadArchiveStatus()]);
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : "封存操作失敗");
+      } finally {
+        setArchiving(false);
+      }
+    },
+    [load, loadArchiveStatus]
+  );
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadArchiveStatus();
+  }, [loadArchiveStatus]);
 
   const persistHallScroll = useCallback(() => {
     const nextState: HallScrollState = {
@@ -357,13 +413,35 @@ function HallPageContent() {
             選擇一題開始作答。可輸入文字或上傳手寫稿，先儲存草稿再正式送出 AI 批改。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setModalOpen(true)}
-          className="relative z-20 cursor-pointer rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-stone-800"
-        >
-          新增題目
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {archiveStatus && archiveStatus.archivedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setRestoreDialogOpen(true)}
+              disabled={archiving}
+              className="rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              還原封存（{archiveStatus.archivedCount}）
+            </button>
+          )}
+          {archiveStatus && archiveStatus.activeCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setArchiveDialogOpen(true)}
+              disabled={archiving}
+              className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+            >
+              封存目前題庫
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setModalOpen(true)}
+            className="relative z-20 cursor-pointer rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-stone-800"
+          >
+            新增題目
+          </button>
+        </div>
       </header>
 
       <AddQuestionModal
@@ -389,6 +467,30 @@ function HallPageContent() {
         onConfirm={() => {
           if (!deleteTargetId || deleting) return;
           void deleteQuestion(deleteTargetId);
+        }}
+      />
+      <ConfirmDeleteDialog
+        open={archiveDialogOpen}
+        title="封存目前題庫"
+        description={`將隱藏目前 ${archiveStatus?.activeCount ?? 0} 題及其字卡、批改、筆記（資料不會刪除）。封存後可從空白題庫開始練習其他科目，日後可一鍵還原。`}
+        confirmLabel={archiving ? "封存中…" : "確認封存"}
+        busy={archiving}
+        onCancel={() => setArchiveDialogOpen(false)}
+        onConfirm={() => {
+          if (archiving) return;
+          void runArchiveAction("archiveAll");
+        }}
+      />
+      <ConfirmDeleteDialog
+        open={restoreDialogOpen}
+        title="還原封存題庫"
+        description={`將還原 ${archiveStatus?.archivedCount ?? 0} 題封存資料，與目前題目一併顯示。`}
+        confirmLabel={archiving ? "還原中…" : "確認還原"}
+        busy={archiving}
+        onCancel={() => setRestoreDialogOpen(false)}
+        onConfirm={() => {
+          if (archiving) return;
+          void runArchiveAction("restoreAll");
         }}
       />
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
+import { filterByActiveQuestions, getArchivedQuestionIds } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
@@ -29,8 +30,9 @@ export async function GET() {
     const notes = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
-    }));
-    return NextResponse.json(notes);
+    })) as Array<{ id: string; questionId?: string }>;
+    const archivedIds = await getArchivedQuestionIds();
+    return NextResponse.json(filterByActiveQuestions(notes, archivedIds));
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch notes";

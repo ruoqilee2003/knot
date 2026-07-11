@@ -6,6 +6,7 @@ import {
   normalizeKeyword,
   normalizeKeywords,
 } from "@/lib/keywords";
+import { isQuestionArchived } from "@/lib/archive";
 import { textSimilarity } from "@/lib/similarity";
 
 export const runtime = "nodejs";
@@ -26,6 +27,7 @@ type QuestionDoc = {
   latestAttemptKeywords?: string[];
   latestAttemptKeywordDisplay?: string[];
   isArchaeology?: boolean;
+  archived?: boolean;
 };
 
 function getCreatedAtMillis(value: unknown): number {
@@ -60,6 +62,9 @@ export async function GET(request: Request) {
     const archaeologyOnly =
       searchParams.get("archaeology") === "1" ||
       searchParams.get("archaeology") === "true";
+    const includeArchived =
+      searchParams.get("includeArchived") === "1" ||
+      searchParams.get("includeArchived") === "true";
 
     let query: FirebaseFirestore.Query = adminDb.collection("questions");
     if (subject) {
@@ -97,6 +102,10 @@ export async function GET(request: Request) {
 
     if (archaeologyOnly) {
       docs = docs.filter((doc) => doc.isArchaeology === true);
+    }
+
+    if (!includeArchived) {
+      docs = docs.filter((doc) => !isQuestionArchived(doc));
     }
 
     // 狀態與關鍵字優先使用 question 文件上的鏡射欄位（attempts PUT 時會同步），
@@ -229,6 +238,7 @@ export async function POST(request: Request) {
         .get();
 
       const duplicates = sameSubjectSnapshot.docs
+        .filter((doc) => !isQuestionArchived(doc.data()))
         .map((doc) => {
           const data = doc.data() as {
             questionText?: string;

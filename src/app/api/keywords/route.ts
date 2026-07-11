@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
+import { getActiveKeywordStats, filterActiveKeywordsByQuery } from "@/lib/active-keywords";
+import { getArchivedQuestionIds } from "@/lib/archive";
 import { adminDb } from "@/lib/firebase-admin";
 import {
   dedupeKeywordsCaseInsensitive,
@@ -8,14 +10,6 @@ import {
 } from "@/lib/keywords";
 
 export const runtime = "nodejs";
-
-type KeywordDoc = {
-  keyword: string;
-  displayKeyword: string;
-  usageCount: number;
-  createdAt: unknown;
-  updatedAt: unknown;
-};
 
 type CreateKeywordBody = {
   keyword?: string;
@@ -53,39 +47,19 @@ export async function GET(request: Request) {
     const safeLimit =
       Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 100) : 20;
 
-    let snapshot: FirebaseFirestore.QuerySnapshot;
-    if (query) {
-      snapshot = await adminDb
-        .collection("keywords")
-        .orderBy("keyword")
-        .startAt(query)
-        .endAt(`${query}\uf8ff`)
-        .limit(safeLimit)
-        .get();
-    } else {
-      snapshot = await adminDb
-        .collection("keywords")
-        .orderBy("usageCount", "desc")
-        .limit(safeLimit)
-        .get();
-    }
+    const archivedIds = await getArchivedQuestionIds();
+    const activeStats = await getActiveKeywordStats(archivedIds, 500);
+    const filtered = filterActiveKeywordsByQuery(
+      activeStats,
+      query,
+      safeLimit
+    );
 
-    const data = snapshot.docs.map((doc) => {
-      const raw = doc.data() as Partial<KeywordDoc>;
-      return {
-        id: doc.id,
-        keyword:
-          typeof raw.displayKeyword === "string" && raw.displayKeyword.trim()
-            ? raw.displayKeyword
-            : typeof raw.keyword === "string"
-              ? raw.keyword
-              : doc.id,
-        usageCount:
-          typeof raw.usageCount === "number" && Number.isFinite(raw.usageCount)
-            ? raw.usageCount
-            : 0,
-      };
-    });
+    const data = filtered.map((item) => ({
+      id: item.normalized,
+      keyword: item.keyword,
+      usageCount: item.usageCount,
+    }));
 
     return NextResponse.json(data);
   } catch (error) {
