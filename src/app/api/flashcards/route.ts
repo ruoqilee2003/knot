@@ -33,6 +33,35 @@ export async function GET() {
   }
 }
 
+/** 刪除某一題的全部字卡：DELETE /api/flashcards?questionId=xxx */
+export async function DELETE(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const questionId = searchParams.get("questionId")?.trim() ?? "";
+  if (!questionId) {
+    return NextResponse.json({ error: "questionId is required" }, { status: 400 });
+  }
+
+  try {
+    const snapshot = await adminDb
+      .collection("flashcards")
+      .where("questionId", "==", questionId)
+      .get();
+    if (snapshot.empty) {
+      return NextResponse.json({ deleted: 0 });
+    }
+    const batch = adminDb.batch();
+    for (const doc of snapshot.docs) {
+      batch.delete(doc.ref);
+    }
+    await batch.commit();
+    return NextResponse.json({ deleted: snapshot.size });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to delete flashcards";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
 export async function POST(request: Request) {
   let body: FlashcardBody;
   try {

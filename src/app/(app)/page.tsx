@@ -1,7 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { AddQuestionModal } from "@/components/AddQuestionModal";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 import { EditQuestionModal } from "@/components/EditQuestionModal";
@@ -25,22 +33,39 @@ type Row = {
   createdAt: unknown;
 };
 
-export default function HallPage() {
+function HallPageContent() {
+  const searchParams = useSearchParams();
+  const keywordParam = searchParams.get("keyword") ?? "";
+
   const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Row | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState("all");
-  const [keywordFilter, setKeywordFilter] = useState("");
+  const [keywordFilter, setKeywordFilter] = useState(keywordParam);
+
+  // 從其他頁（例如統計儀表板的關鍵字）帶著 ?keyword= 連過來時同步篩選條件
+  useEffect(() => {
+    if (keywordParam) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setKeywordFilter(keywordParam);
+    }
+  }, [keywordParam]);
   const [yearOrder, setYearOrder] = useState<"desc" | "asc">("desc");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectingForExport, setSelectingForExport] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     setLoadError(null);
+    setLoading(true);
     try {
       const params = new URLSearchParams();
       if (subjectFilter !== "all") {
@@ -50,7 +75,10 @@ export default function HallPage() {
         params.set("keyword", keywordFilter.trim());
       }
       const query = params.size > 0 ? `?${params.toString()}` : "";
-      const response = await fetch(`/api/questions${query}`, { method: "GET" });
+      const response = await fetch(`/api/questions${query}`, {
+        method: "GET",
+        signal: controller.signal,
+      });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
           | { error?: string }
@@ -84,9 +112,12 @@ export default function HallPage() {
       setRows(next);
       setSelectedIds([]);
       setSelectingForExport(false);
+      setLoading(false);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       setLoadError(e instanceof Error ? e.message : "無法讀取題庫");
       setRows([]);
+      setLoading(false);
     }
   }, [subjectFilter, keywordFilter]);
 
@@ -438,11 +469,20 @@ export default function HallPage() {
                     {r.imageUrl && (
                       <span className="text-stone-400">含題目附圖</span>
                     )}
-                    {(r.latestAttemptStatus === "completed" ||
-                      r.latestAttemptStatus === "analyzed" ||
-                      r.latestAttemptStatus === "flashcards_ready") && (
+                    {r.latestAttemptStatus === "completed" && (
                       <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">
                         已完成
+                      </span>
+                    )}
+                    {(r.latestAttemptStatus === "analyzed" ||
+                      r.latestAttemptStatus === "flashcards_ready") && (
+                      <span className="rounded-full bg-sky-100 px-2 py-0.5 font-medium text-sky-800">
+                        已批改
+                      </span>
+                    )}
+                    {r.latestAttemptStatus === "flashcards_ready" && (
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-800">
+                        已生成字卡
                       </span>
                     )}
                   </div>
@@ -494,11 +534,30 @@ export default function HallPage() {
         ))}
       </ul>
 
-      {!loadError && visibleRows.length === 0 && (
+      {loading && !loadError && visibleRows.length === 0 && (
+        <div className="mt-10 space-y-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-28 animate-pulse rounded-2xl border border-stone-200/80 bg-stone-100/70"
+            />
+          ))}
+        </div>
+      )}
+
+      {!loading && !loadError && visibleRows.length === 0 && (
         <p className="mt-16 text-center text-sm text-stone-500">
           目前篩選條件下沒有題目。
         </p>
       )}
     </div>
+  );
+}
+
+export default function HallPage() {
+  return (
+    <Suspense fallback={null}>
+      <HallPageContent />
+    </Suspense>
   );
 }

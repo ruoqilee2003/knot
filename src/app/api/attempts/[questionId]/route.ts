@@ -32,6 +32,8 @@ type AttemptBody = {
   analysis?: AnalysisResult | null;
   keywords?: string[];
   keywordDisplay?: string[];
+  /** true 時刪除已儲存的批改結果（analysis 欄位） */
+  clearAnalysis?: boolean;
 };
 
 function normalizeStatus(input: unknown): AttemptStatus {
@@ -196,6 +198,9 @@ export async function PUT(request: Request, context: RouteContext) {
   if (analysis) {
     attemptPayload.analysis = analysis;
     attemptPayload.analyzedAt = FieldValue.serverTimestamp();
+  } else if (body.clearAnalysis === true) {
+    attemptPayload.analysis = FieldValue.delete();
+    attemptPayload.analyzedAt = FieldValue.delete();
   }
 
   if (status === "completed") {
@@ -217,6 +222,14 @@ export async function PUT(request: Request, context: RouteContext) {
       typeof questionData?.subject === "string" ? questionData.subject.trim() : "";
 
     const attemptRef = adminDb.collection("attempts").doc(questionId);
+    const previousAttemptSnap = await attemptRef.get();
+    const previousKeywords = new Set(
+      normalizeKeywords(
+        (previousAttemptSnap.data() as { keywords?: string[] } | undefined)
+          ?.keywords
+      )
+    );
+
     await attemptRef.set(
       {
         ...attemptPayload,
@@ -225,7 +238,11 @@ export async function PUT(request: Request, context: RouteContext) {
       },
       { merge: true }
     );
-    await upsertKeywordCollection(keywordDisplay);
+    // 只對這次新加入的關鍵字遞增 usageCount，避免每次儲存草稿都灌水
+    const newKeywordDisplay = keywordDisplay.filter(
+      (item) => !previousKeywords.has(normalizeKeyword(item))
+    );
+    await upsertKeywordCollection(newKeywordDisplay);
 
     await questionRef.set(
       {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useParams } from "next/navigation";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseStorage } from "@/lib/firebase";
 import type { AnalysisResult } from "@/types/analysis";
@@ -40,6 +41,7 @@ type DraftSyncPayload = {
   analysis?: AnalysisResult;
   keywords: string[];
   keywordDisplay: string[];
+  clearAnalysis?: boolean;
 };
 
 function draftKey(id: string) {
@@ -104,10 +106,18 @@ export default function PracticePage() {
   const [attemptStatus, setAttemptStatus] = useState<
     "draft" | "completed" | "analyzed" | "analyze_failed" | "flashcards_ready"
   >("draft");
+  // 已完成/已批改的題目預設唯讀，避免回顧時誤改內容
+  const [readOnly, setReadOnly] = useState(false);
+  const [clearTarget, setClearTarget] = useState<
+    "analysis" | "flashcards" | null
+  >(null);
+  const [clearBusy, setClearBusy] = useState(false);
   const [timerRunning, setTimerRunning] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [selectedWordCount, setSelectedWordCount] = useState(0);
   const answerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const initialLoadedRef = useRef(false);
+  const lastSyncedSnapshotRef = useRef("");
   const busyMessage = "系統忙碌中，請再試一次";
   const attemptStatusTextMap: Record<
     "draft" | "completed" | "analyzed" | "analyze_failed" | "flashcards_ready",
@@ -193,7 +203,16 @@ export default function PracticePage() {
           if (typeof parsed.text === "string") setAnswerText(parsed.text);
           if (parsed.imageUrl) setAnswerPreview(parsed.imageUrl);
           if (parsed.analysis) setAnalysis(parsed.analysis);
-          if (parsed.status) setAttemptStatus(parsed.status);
+          if (parsed.status) {
+            setAttemptStatus(parsed.status);
+            if (
+              parsed.status === "completed" ||
+              parsed.status === "analyzed" ||
+              parsed.status === "flashcards_ready"
+            ) {
+              setReadOnly(true);
+            }
+          }
           const nextKeywords = dedupeKeywordsCaseInsensitive(
             Array.isArray(parsed.keywordDisplay)
               ? parsed.keywordDisplay
@@ -201,6 +220,11 @@ export default function PracticePage() {
           );
           setKeywords(nextKeywords);
           setKeywordInput("");
+          lastSyncedSnapshotRef.current = JSON.stringify({
+            text: typeof parsed.text === "string" ? parsed.text : "",
+            keywords: nextKeywords,
+          });
+          initialLoadedRef.current = true;
           return;
         }
       } catch {
@@ -209,7 +233,10 @@ export default function PracticePage() {
 
       try {
         const raw = localStorage.getItem(draftKey(id));
-        if (!raw || cancelled) return;
+        if (!raw || cancelled) {
+          initialLoadedRef.current = true;
+          return;
+        }
         const parsed = JSON.parse(raw) as {
           text?: string;
           imageUrl?: string | null;
@@ -219,6 +246,7 @@ export default function PracticePage() {
       } catch {
         /* ignore */
       }
+      initialLoadedRef.current = true;
     })();
     return () => {
       cancelled = true;
@@ -412,9 +440,59 @@ export default function PracticePage() {
           | null;
         throw new Error(data?.error || "Firestore 同步失敗");
       }
+      lastSyncedSnapshotRef.current = JSON.stringify({
+        text: payload.text,
+        keywords: payload.keywordDisplay,
+      });
     },
     [id]
   );
+
+  // 草稿自動儲存：本機（0.8 秒）+ Firestore（4 秒），沿用目前狀態避免覆蓋批改結果
+  useEffect(() => {
+    if (!id || !initialLoadedRef.current || readOnly) return;
+    const timer = window.setTimeout(() => {
+      localStorage.setItem(
+        draftKey(id),
+        JSON.stringify({
+          text: answerText,
+          imageUrl: answerPreview?.startsWith("http") ? answerPreview : null,
+        })
+      );
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [id, answerText, answerPreview, readOnly]);
+
+  useEffect(() => {
+    if (!id || !initialLoadedRef.current || analyzing || readOnly) return;
+    const snapshot = JSON.stringify({ text: answerText, keywords });
+    if (snapshot === lastSyncedSnapshotRef.current) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        await syncDraftToFirestore({
+          text: answerText,
+          imageUrl: answerPreview?.startsWith("http") ? answerPreview : null,
+          status: attemptStatus,
+          errorMessage: null,
+          keywords,
+          keywordDisplay: keywords,
+        });
+        setDraftSavedAt(new Date().toLocaleString());
+      } catch {
+        /* 自動儲存失敗保持安靜，手動儲存時才顯示錯誤 */
+      }
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [
+    id,
+    answerText,
+    keywords,
+    attemptStatus,
+    analyzing,
+    answerPreview,
+    readOnly,
+    syncDraftToFirestore,
+  ]);
 
   const saveDraft = useCallback(async () => {
     if (!id) return;
@@ -633,6 +711,80 @@ export default function PracticePage() {
     syncDraftToFirestore,
   ]);
 
+  const clearAnalysisResult = useCallback(async () => {
+    if (!id) return;
+    setClearBusy(true);
+    setApiError(null);
+    try {
+      await syncDraftToFirestore({
+        text: answerText,
+        imageUrl:
+          answerPreview && answerPreview.startsWith("http") ? answerPreview : null,
+        status: "completed",
+        errorMessage: null,
+        keywords,
+        keywordDisplay: keywords,
+        clearAnalysis: true,
+      });
+      setAnalysis(null);
+      setAttemptStatus("completed");
+      setClearTarget(null);
+      showToast("已清除批改結果");
+    } catch (e) {
+      setApiError(e instanceof Error ? e.message : "清除批改結果失敗");
+    } finally {
+      setClearBusy(false);
+    }
+  }, [id, answerText, answerPreview, keywords, syncDraftToFirestore]);
+
+  const clearQuestionFlashcards = useCallback(async () => {
+    if (!id) return;
+    setClearBusy(true);
+    setApiError(null);
+    try {
+      const response = await fetch(
+        `/api/flashcards?questionId=${encodeURIComponent(id)}`,
+        { method: "DELETE" }
+      );
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; deleted?: number }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "清除字卡失敗");
+      }
+      const deleted = Number(payload?.deleted ?? 0);
+      if (attemptStatus === "flashcards_ready") {
+        const nextStatus = analysis ? "analyzed" : "completed";
+        await syncDraftToFirestore({
+          text: answerText,
+          imageUrl:
+            answerPreview && answerPreview.startsWith("http")
+              ? answerPreview
+              : null,
+          status: nextStatus,
+          errorMessage: null,
+          keywords,
+          keywordDisplay: keywords,
+        });
+        setAttemptStatus(nextStatus);
+      }
+      setClearTarget(null);
+      showToast(deleted > 0 ? `已刪除 ${deleted} 張字卡` : "此題目前沒有字卡");
+    } catch (e) {
+      setApiError(e instanceof Error ? e.message : "清除字卡失敗");
+    } finally {
+      setClearBusy(false);
+    }
+  }, [
+    id,
+    attemptStatus,
+    analysis,
+    answerText,
+    answerPreview,
+    keywords,
+    syncDraftToFirestore,
+  ]);
+
   const saveAsNote = useCallback(async () => {
     if (!analysis || !question || !id) return;
     setNoteBusy(true);
@@ -643,15 +795,20 @@ export default function PracticePage() {
         : answerPreview
           ? "（本次作答未輸入文字，請參考上傳圖片作答）"
           : "（本次未填寫文字作答）";
-      const body = [
-        `【考題考點】\n- ${analysis.examKeyPoints.join("\n- ")}`,
-        `【答案評語】\n${analysis.answerFeedback}`,
-        `【補強建議】\n${analysis.improvementSuggestions}`,
+      const sections = [`【考題重點】\n- ${analysis.examKeyPoints.join("\n- ")}`];
+      if (analysis.answerFeedback) {
+        sections.push(`【答案評語】\n${analysis.answerFeedback}`);
+      }
+      if (analysis.improvementSuggestions) {
+        sections.push(`【補強建議】\n${analysis.improvementSuggestions}`);
+      }
+      sections.push(
         `【原始作答】\n${rawAnswerSection}`,
         `【複習字卡】\n${analysis.flashcards
           .map((card, idx) => `${idx + 1}. Q: ${card.front}\n   A: ${card.back}`)
-          .join("\n")}`,
-      ].join("\n\n");
+          .join("\n")}`
+      );
+      const body = sections.join("\n\n");
       const response = await fetch("/api/study-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -747,7 +904,14 @@ export default function PracticePage() {
         <section className="flex min-w-0 flex-col bg-[#f4f1eb] p-6">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="font-serif text-xl font-semibold text-stone-900">作答</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-serif text-xl font-semibold text-stone-900">作答</h2>
+                {readOnly && (
+                  <span className="rounded-full bg-stone-200 px-2 py-0.5 text-xs font-medium text-stone-700">
+                    檢視模式
+                  </span>
+                )}
+              </div>
               <p className="mt-1 text-xs text-stone-600">
                 狀態：{attemptStatusTextMap[attemptStatus]}
               </p>
@@ -805,8 +969,8 @@ export default function PracticePage() {
                 }}
                 list="keyword-suggestions"
                 placeholder="#DDoS"
-                className="min-w-[220px] flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2"
-                disabled={analyzing}
+                className="min-w-[220px] flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2 disabled:bg-stone-100"
+                disabled={analyzing || readOnly}
               />
               <datalist id="keyword-suggestions">
                 {keywordOptions.map((item) => (
@@ -816,7 +980,7 @@ export default function PracticePage() {
               <button
                 type="button"
                 onClick={() => void addSingleKeyword(keywordInput)}
-                disabled={analyzing || !keywordInput.trim()}
+                disabled={analyzing || readOnly || !keywordInput.trim()}
                 className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
               >
                 新增關鍵字
@@ -828,8 +992,8 @@ export default function PracticePage() {
                   if (!selected) return;
                   void addSingleKeyword(selected);
                 }}
-                disabled={analyzing || keywordOptions.length === 0}
-                className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-xs text-stone-700"
+                disabled={analyzing || readOnly || keywordOptions.length === 0}
+                className="rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-xs text-stone-700 disabled:opacity-50"
               >
                 <option value="">選擇既有關鍵字</option>
                 {keywordOptions
@@ -851,25 +1015,37 @@ export default function PracticePage() {
             )}
             {keywords.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {keywords.map((item) => (
-                  <button
-                    type="button"
-                    key={item}
-                    onClick={() => removeKeyword(item)}
-                    className="rounded-full bg-stone-200 px-2 py-0.5 text-xs text-stone-700 hover:bg-stone-300"
-                  >
-                    #{item} ×
-                  </button>
-                ))}
+                {keywords.map((item) =>
+                  readOnly ? (
+                    <span
+                      key={item}
+                      className="rounded-full bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
+                    >
+                      #{item}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      key={item}
+                      onClick={() => removeKeyword(item)}
+                      className="rounded-full bg-stone-200 px-2 py-0.5 text-xs text-stone-700 hover:bg-stone-300"
+                    >
+                      #{item} ×
+                    </button>
+                  )
+                )}
               </div>
             )}
           </div>
 
           <textarea
             ref={answerTextareaRef}
-            className="mt-4 min-h-[420px] w-full overflow-y-auto rounded-xl border border-stone-300 bg-white/95 p-4 text-sm leading-relaxed text-stone-900 shadow-inner outline-none ring-stone-400 focus:ring-2"
+            className={`mt-4 min-h-[420px] w-full overflow-y-auto rounded-xl border border-stone-300 p-4 text-sm leading-relaxed text-stone-900 shadow-inner outline-none ring-stone-400 focus:ring-2 ${
+              readOnly ? "bg-stone-50" : "bg-white/95"
+            }`}
             placeholder="在此輸入申論草稿..."
             value={answerText}
+            readOnly={readOnly}
             onChange={(e) => {
               setAnswerText(e.target.value);
               const selectedText = e.target.value.slice(
@@ -884,7 +1060,7 @@ export default function PracticePage() {
               if ((e.ctrlKey || e.metaKey) && key === "s") {
                 e.preventDefault();
                 e.stopPropagation();
-                if (!analyzing) {
+                if (!analyzing && !readOnly) {
                   void saveDraft();
                 }
                 return;
@@ -906,8 +1082,8 @@ export default function PracticePage() {
             <input
               type="file"
               accept="image/*"
-              className="mt-1 block w-full text-sm text-stone-600"
-              disabled={analyzing}
+              className="mt-1 block w-full text-sm text-stone-600 disabled:opacity-50"
+              disabled={analyzing || readOnly}
               onChange={(e) => setAnswerFile(e.target.files?.[0] ?? null)}
             />
             {answerPreview && (
@@ -923,6 +1099,20 @@ export default function PracticePage() {
             )}
           </div>
 
+          {readOnly ? (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-stone-300 bg-white/80 px-4 py-3">
+              <p className="text-sm text-stone-600">
+                目前為檢視模式，內容唯讀，可安心回顧不怕誤改。
+              </p>
+              <button
+                type="button"
+                onClick={() => setReadOnly(false)}
+                className="rounded-xl bg-stone-900 px-4 py-2 text-sm font-medium text-white hover:bg-stone-800"
+              >
+                編輯作答
+              </button>
+            </div>
+          ) : (
           <div className="mt-4 grid grid-cols-4 gap-2">
             <button
               type="button"
@@ -957,6 +1147,7 @@ export default function PracticePage() {
               {flashBusy ? "生成中…" : "字卡"}
             </button>
           </div>
+          )}
 
           <div className="mt-3 rounded-xl border border-stone-200 bg-white/80 p-3">
             <div className="flex items-center justify-between gap-2">
@@ -1040,7 +1231,52 @@ export default function PracticePage() {
         </section>
 
         <section className="flex min-w-0 flex-col border-t border-stone-200 bg-[#faf8f5] p-6 xl:border-t-0">
-          <h2 className="font-serif text-xl font-semibold text-stone-900">批改</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-serif text-xl font-semibold text-stone-900">批改</h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setClearTarget("analysis")}
+                disabled={!analysis || analyzing || clearBusy}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-40"
+              >
+                清除批改結果
+              </button>
+              <button
+                type="button"
+                onClick={() => setClearTarget("flashcards")}
+                disabled={analyzing || clearBusy}
+                className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-40"
+              >
+                清除此題字卡
+              </button>
+            </div>
+          </div>
+
+          <ConfirmDeleteDialog
+            open={clearTarget === "analysis"}
+            title="清除批改結果"
+            description="會刪除這題儲存的考題重點與複習字卡建議（已另存的解答批改筆記與已寫入的字卡不受影響）。之後可以再按「批改」重新生成，確定要清除嗎？"
+            confirmLabel="確認清除"
+            busy={clearBusy}
+            onCancel={() => setClearTarget(null)}
+            onConfirm={() => {
+              if (clearBusy) return;
+              void clearAnalysisResult();
+            }}
+          />
+          <ConfirmDeleteDialog
+            open={clearTarget === "flashcards"}
+            title="清除此題字卡"
+            description="會刪除這一題寫入字卡庫的所有字卡（關鍵字卡總覽同步移除），此動作無法復原。之後可重新批改再生成新字卡，確定要清除嗎？"
+            confirmLabel="確認清除"
+            busy={clearBusy}
+            onCancel={() => setClearTarget(null)}
+            onConfirm={() => {
+              if (clearBusy) return;
+              void clearQuestionFlashcards();
+            }}
+          />
 
           {analyzing && (
             <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-stone-300 bg-white/60 py-12">
@@ -1054,7 +1290,7 @@ export default function PracticePage() {
 
           {!analyzing && !analysis && (
             <div className="mt-6 rounded-2xl border border-stone-200 bg-white/80 p-4 text-sm text-stone-600">
-              送出批改後，這裡會顯示考題考點、答案評語、補強建議與複習字卡。
+              送出批改後，這裡會顯示考題重點與複習字卡。
             </div>
           )}
 
@@ -1072,7 +1308,7 @@ export default function PracticePage() {
               </div>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-500">
-                  考題考點
+                  考題重點
                 </h3>
                 <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-stone-800">
                   {analysis.examKeyPoints.map((k) => (
@@ -1080,8 +1316,12 @@ export default function PracticePage() {
                   ))}
                 </ul>
               </div>
-              <Block title="答案評語" body={analysis.answerFeedback} />
-              <Block title="補強建議" body={analysis.improvementSuggestions} />
+              {analysis.answerFeedback && (
+                <Block title="答案評語" body={analysis.answerFeedback} />
+              )}
+              {analysis.improvementSuggestions && (
+                <Block title="補強建議" body={analysis.improvementSuggestions} />
+              )}
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-stone-500">
                   複習字卡

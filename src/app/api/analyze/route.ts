@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI, type Part } from "@google/generative-ai";
 
 export const maxDuration = 120;
-const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+// 批改用最新世代的 Flash（性價比檔）；名稱不可用時依序退回較舊的模型
+const DEFAULT_GEMINI_MODEL = "gemini-3-flash";
 const FALLBACK_GEMINI_MODELS = [
+  "gemini-3-flash",
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-1.5-flash",
 ];
 const HIGH_DEMAND_ERROR_MESSAGE = "系統忙碌中，請再試一次";
 
@@ -20,20 +21,18 @@ type AnalyzeBody = {
 };
 
 const ANALYSIS_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業批改助教，專長在以下考科：資通網路、資訊安全實務、資料庫應用、系統程式。
-請依「題目」與「考生答案」（可能來自圖片 OCR）批改，並輸出 **純 JSON**（不要 markdown、不要註解），鍵名固定如下：
+請依「題目」與「考生答案」（可能來自圖片 OCR）分析，並輸出 **純 JSON**（不要 markdown、不要註解），鍵名固定如下：
 {
-  "examKeyPoints": ["考點1", "考點2", "考點3"],
-  "answerFeedback": "針對答案整體品質與正確性的評語（繁體中文）",
-  "improvementSuggestions": "可執行的補強建議（繁體中文，條列式文字）",
+  "examKeyPoints": ["重點1", "重點2", "..."],
   "flashcards": [
     { "front": "題目概念或關鍵問句", "back": "精簡答案重點（繁體中文）" }
   ]
 }
 規則：
 1) 嚴格根據題目與考科判斷，不要離題。
-2) examKeyPoints 需 3 點，聚焦考場會考的核心觀念。
-3) flashcards 需 3 張，每張可直接用於複習測驗，著重於名詞解釋的部分。
-4) 不要產生示範文。`;
+2) examKeyPoints 為「考題重點」：3~6 點，依題目實際份量決定數量。每點要具體可用於答題，說明這題考的核心觀念、答題必須涵蓋的架構或關鍵詞，而不是空泛的方向；若考生答案有明顯遺漏或錯誤，直接在對應重點中指出應補上什麼。
+3) flashcards 數量彈性（2~8 張），依這題實際考到的內容決定：每個重要名詞、協定、機制或流程各出一張，不要為了湊數而重複，也不要遺漏題目核心概念。每張卡正面是名詞或關鍵問句，背面是精簡但完整的答案重點。
+4) 全部使用繁體中文。不要產生示範文。`;
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -169,50 +168,51 @@ ${questionText}
       );
     }
 
-    const parsed = JSON.parse(text);
-    const required = [
-      "examKeyPoints",
-      "answerFeedback",
-      "improvementSuggestions",
-      "flashcards",
-    ];
-    for (const key of required) {
-      if (parsed[key] == null) {
-        return NextResponse.json(
-          { error: `模型回傳缺少欄位：${key}`, raw: text },
-          { status: 502 }
-        );
-      }
-    }
-    if (!Array.isArray(parsed.examKeyPoints) || parsed.examKeyPoints.length !== 3) {
+    const parsed = JSON.parse(text) as {
+      examKeyPoints?: unknown;
+      flashcards?: unknown;
+    };
+
+    // 數量彈性：只要求至少 1 點/1 張，超出上限的部分截斷，避免模型多給就整次失敗
+    const examKeyPoints = (Array.isArray(parsed.examKeyPoints)
+      ? parsed.examKeyPoints
+      : []
+    )
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean)
+      .slice(0, 8);
+
+    const flashcards = (Array.isArray(parsed.flashcards) ? parsed.flashcards : [])
+      .map((item) => {
+        if (typeof item !== "object" || item == null) return null;
+        const front =
+          typeof (item as { front?: string }).front === "string"
+            ? (item as { front: string }).front.trim()
+            : "";
+        const back =
+          typeof (item as { back?: string }).back === "string"
+            ? (item as { back: string }).back.trim()
+            : "";
+        if (!front || !back) return null;
+        return { front, back };
+      })
+      .filter((item): item is { front: string; back: string } => item !== null)
+      .slice(0, 10);
+
+    if (examKeyPoints.length === 0) {
       return NextResponse.json(
-        {
-          error: "examKeyPoints 必須為長度 3 的陣列",
-          raw: text,
-        },
+        { error: "模型回傳缺少 examKeyPoints", raw: text },
         { status: 502 }
       );
     }
-    if (
-      !Array.isArray(parsed.flashcards) ||
-      parsed.flashcards.length !== 3 ||
-      parsed.flashcards.some(
-        (x: unknown) =>
-          typeof x !== "object" ||
-          x == null ||
-          typeof (x as { front?: string }).front !== "string" ||
-          typeof (x as { back?: string }).back !== "string"
-      )
-    ) {
+    if (flashcards.length === 0) {
       return NextResponse.json(
-        {
-          error: "flashcards 必須為長度 3，且每筆含 front/back 字串",
-          raw: text,
-        },
+        { error: "模型回傳缺少有效的 flashcards", raw: text },
         { status: 502 }
       );
     }
-    return NextResponse.json(parsed);
+
+    return NextResponse.json({ examKeyPoints, flashcards });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Gemini 呼叫失敗";
     const highDemand =

@@ -6,6 +6,7 @@ import {
   normalizeKeyword,
   normalizeKeywords,
 } from "@/lib/keywords";
+import { textSimilarity } from "@/lib/similarity";
 
 export const runtime = "nodejs";
 
@@ -26,12 +27,6 @@ type QuestionDoc = {
   latestAttemptKeywordDisplay?: string[];
 };
 
-type AttemptDoc = {
-  status?: string;
-  keywords?: string[];
-  keywordDisplay?: string[];
-};
-
 function getCreatedAtMillis(value: unknown): number {
   if (!value || typeof value !== "object") return 0;
   const candidate = value as { toMillis?: () => number };
@@ -50,7 +45,10 @@ type QuestionBody = {
   year?: number;
   score?: number;
   imageUrl?: string | null;
+  allowDuplicate?: boolean;
 };
+
+const DUPLICATE_SIMILARITY_THRESHOLD = 0.6;
 
 export async function GET(request: Request) {
   try {
@@ -92,47 +90,73 @@ export async function GET(request: Request) {
       docs = docs.filter((doc) => allowedIds.has(doc.id));
     }
 
-    const attempts = await Promise.all(
-      docs.map((doc) => adminDb.collection("attempts").doc(doc.id).get())
+    // 狀態與關鍵字優先使用 question 文件上的鏡射欄位（attempts PUT 時會同步），
+    // 只對缺鏡射欄位的舊資料用單次 getAll 批次補查，避免每題各查一次的 N+1 讀取。
+    const docsMissingStatus = docs.filter(
+      (doc) =>
+        typeof doc.latestAttemptStatus !== "string" &&
+        typeof doc.latestDraft?.status !== "string"
     );
-    const attemptMap = new Map<string, AttemptDoc>();
-    for (const attempt of attempts) {
-      if (!attempt.exists) continue;
-      attemptMap.set(attempt.id, attempt.data() as AttemptDoc);
+    const fallbackAttempts = new Map<
+      string,
+      { status?: string; keywords?: string[]; keywordDisplay?: string[] }
+    >();
+    if (docsMissingStatus.length > 0) {
+      const refs = docsMissingStatus.map((doc) =>
+        adminDb.collection("attempts").doc(doc.id)
+      );
+      const snapshots = await adminDb.getAll(...refs);
+      for (const snap of snapshots) {
+        if (!snap.exists) continue;
+        fallbackAttempts.set(
+          snap.id,
+          snap.data() as {
+            status?: string;
+            keywords?: string[];
+            keywordDisplay?: string[];
+          }
+        );
+      }
     }
 
     const data = docs.map((doc) => {
-      const attempt = attemptMap.get(doc.id);
+      const fallback = fallbackAttempts.get(doc.id);
       const latestAttemptStatus =
-        typeof attempt?.status === "string"
-          ? attempt.status
-          : typeof doc.latestAttemptStatus === "string"
-            ? doc.latestAttemptStatus
-            : typeof doc.latestDraft?.status === "string"
-              ? doc.latestDraft.status
+        typeof doc.latestAttemptStatus === "string"
+          ? doc.latestAttemptStatus
+          : typeof doc.latestDraft?.status === "string"
+            ? doc.latestDraft.status
+            : typeof fallback?.status === "string"
+              ? fallback.status
               : null;
 
-      const attemptKeywords = normalizeKeywords(attempt?.keywords);
-      const attemptKeywordDisplay = dedupeKeywordsCaseInsensitive(
-        Array.isArray(attempt?.keywordDisplay)
-          ? attempt.keywordDisplay
-          : attempt?.keywords ?? []
-      );
+      const mirroredKeywords = normalizeKeywords(doc.latestAttemptKeywords);
       const latestKeywords =
-        attemptKeywords.length > 0
-          ? attemptKeywords
-          : normalizeKeywords(doc.latestAttemptKeywords);
+        mirroredKeywords.length > 0
+          ? mirroredKeywords
+          : normalizeKeywords(fallback?.keywords);
+      const mirroredKeywordDisplay = dedupeKeywordsCaseInsensitive(
+        Array.isArray(doc.latestAttemptKeywordDisplay)
+          ? doc.latestAttemptKeywordDisplay
+          : doc.latestAttemptKeywords ?? []
+      );
       const latestKeywordDisplay =
-        attemptKeywordDisplay.length > 0
-          ? attemptKeywordDisplay
+        mirroredKeywordDisplay.length > 0
+          ? mirroredKeywordDisplay
           : dedupeKeywordsCaseInsensitive(
-              Array.isArray(doc.latestAttemptKeywordDisplay)
-                ? doc.latestAttemptKeywordDisplay
-                : doc.latestAttemptKeywords ?? []
+              Array.isArray(fallback?.keywordDisplay)
+                ? fallback.keywordDisplay
+                : fallback?.keywords ?? []
             );
 
       return {
-        ...doc,
+        id: doc.id,
+        subject: doc.subject ?? "",
+        year: doc.year ?? 0,
+        score: doc.score ?? 100,
+        questionText: doc.questionText ?? doc.title ?? "",
+        imageUrl: doc.imageUrl ?? null,
+        createdAt: doc.createdAt ?? null,
         latestAttemptStatus,
         latestKeywords,
         latestKeywordDisplay,
@@ -173,6 +197,7 @@ export async function POST(request: Request) {
     typeof body.imageUrl === "string" && body.imageUrl.trim().length > 0
       ? body.imageUrl.trim()
       : null;
+  const allowDuplicate = body.allowDuplicate === true;
 
   if (!subject || (!questionText && !title)) {
     return NextResponse.json(
@@ -183,6 +208,48 @@ export async function POST(request: Request) {
 
   try {
     const normalizedQuestionText = questionText || title;
+
+    if (!allowDuplicate) {
+      const sameSubjectSnapshot = await adminDb
+        .collection("questions")
+        .where("subject", "==", subject)
+        .select("questionText", "title", "year")
+        .limit(500)
+        .get();
+
+      const duplicates = sameSubjectSnapshot.docs
+        .map((doc) => {
+          const data = doc.data() as {
+            questionText?: string;
+            title?: string;
+            year?: number;
+          };
+          const existingText = String(data.questionText ?? data.title ?? "");
+          return {
+            id: doc.id,
+            year: typeof data.year === "number" ? data.year : null,
+            questionText:
+              existingText.length > 120
+                ? `${existingText.slice(0, 120)}…`
+                : existingText,
+            similarity: textSimilarity(normalizedQuestionText, existingText),
+          };
+        })
+        .filter((item) => item.similarity >= DUPLICATE_SIMILARITY_THRESHOLD)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, 5);
+
+      if (duplicates.length > 0) {
+        return NextResponse.json(
+          {
+            error: "偵測到相似題目，可能已經存在",
+            duplicates,
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     const payload = {
       title: title || normalizedQuestionText,
       subject,

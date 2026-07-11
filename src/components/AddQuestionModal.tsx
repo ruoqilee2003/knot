@@ -1,14 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseStorage } from "@/lib/firebase";
+
+function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const commaIndex = result.indexOf(",");
+      resolve({
+        base64: commaIndex >= 0 ? result.slice(commaIndex + 1) : result,
+        mimeType: file.type || "image/png",
+      });
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("讀取圖片失敗"));
+    reader.readAsDataURL(file);
+  });
+}
 
 type Props = {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+};
+
+type DuplicateMatch = {
+  id: string;
+  year: number | null;
+  questionText: string;
+  similarity: number;
 };
 
 export function AddQuestionModal({ open, onClose, onCreated }: Props) {
@@ -20,11 +43,45 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const ocrInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!open || typeof window === "undefined") return null;
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleOcrFile(file: File) {
+    setError(null);
+    setOcrBusy(true);
+    try {
+      const { base64, mimeType } = await fileToBase64(file);
+      const response = await fetch("/api/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64, mimeType }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; text?: string }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "OCR 辨識失敗");
+      }
+      const text = String(payload?.text ?? "").trim();
+      if (!text) {
+        throw new Error("無法從圖片辨識出文字，請換一張更清晰的圖片");
+      }
+      // 圖片僅用於辨識，不會儲存；辨識結果填入題目內容供校對
+      setQuestionText((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "OCR 辨識失敗");
+    } finally {
+      setOcrBusy(false);
+      if (ocrInputRef.current) {
+        ocrInputRef.current.value = "";
+      }
+    }
+  }
+
+  async function submitQuestion(allowDuplicate: boolean) {
     setError(null);
     if (!subject.trim() || !questionText.trim()) {
       setError("請填寫科目與題目內容");
@@ -53,12 +110,21 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
           score: Number(score) > 0 ? Number(score) : 100,
           questionText: questionText.trim(),
           imageUrl,
+          allowDuplicate,
         }),
       });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
+          | { error?: string; duplicates?: DuplicateMatch[] }
           | null;
+        if (
+          response.status === 409 &&
+          Array.isArray(payload?.duplicates) &&
+          payload.duplicates.length > 0
+        ) {
+          setDuplicates(payload.duplicates);
+          return;
+        }
         throw new Error(payload?.error || "新增失敗");
       }
       setSubject("");
@@ -67,6 +133,7 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
       setScore(100);
       setQuestionText("");
       setFile(null);
+      setDuplicates([]);
       onCreated();
       onClose();
     } catch (err) {
@@ -74,6 +141,12 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setDuplicates([]);
+    await submitQuestion(false);
   }
 
   return createPortal(
@@ -139,15 +212,38 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
             />
           </div>
           <div>
-            <label className="text-sm font-medium text-stone-700">
-              題目內容
-            </label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium text-stone-700">
+                題目內容
+              </label>
+              <button
+                type="button"
+                onClick={() => ocrInputRef.current?.click()}
+                disabled={ocrBusy || busy}
+                className="rounded-lg border border-stone-300 bg-white px-3 py-1 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+              >
+                {ocrBusy ? "辨識中…" : "掃描圖片辨識文字"}
+              </button>
+              <input
+                ref={ocrInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void handleOcrFile(file);
+                }}
+              />
+            </div>
             <textarea
               className="mt-1 min-h-[140px] w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-stone-900 outline-none ring-stone-400 focus:ring-2"
               value={questionText}
               onChange={(e) => setQuestionText(e.target.value)}
-              placeholder="貼上申論題幹…"
+              placeholder="貼上申論題幹，或用右上角按鈕掃描圖片…"
             />
+            <p className="mt-1 text-xs text-stone-500">
+              掃描的圖片只用來辨識文字，不會被儲存；辨識結果會填入上方欄位供校對。
+            </p>
           </div>
           <div>
             <label className="text-sm font-medium text-stone-700">
@@ -165,6 +261,30 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
               {error}
             </p>
           )}
+          {duplicates.length > 0 && (
+            <div
+              className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              role="alert"
+            >
+              <p className="font-medium">偵測到相似題目，可能已經存在：</p>
+              <ul className="mt-2 space-y-2">
+                {duplicates.map((d) => (
+                  <li key={d.id} className="rounded-lg bg-white/70 p-2">
+                    <p className="text-xs text-amber-800">
+                      {d.year ? `${d.year} 年・` : ""}相似度{" "}
+                      {Math.round(d.similarity * 100)}%
+                    </p>
+                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-stone-700">
+                      {d.questionText}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-amber-800">
+                若確認不是同一題，可按「仍要建立」繼續新增。
+              </p>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -173,6 +293,16 @@ export function AddQuestionModal({ open, onClose, onCreated }: Props) {
             >
               取消
             </button>
+            {duplicates.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void submitQuestion(true)}
+                disabled={busy}
+                className="rounded-lg border border-amber-400 bg-amber-100 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-200 disabled:opacity-60"
+              >
+                {busy ? "儲存中…" : "仍要建立"}
+              </button>
+            )}
             <button
               type="submit"
               disabled={busy}

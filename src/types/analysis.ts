@@ -1,7 +1,9 @@
 export type AnalysisResult = {
   examKeyPoints: string[];
-  answerFeedback: string;
-  improvementSuggestions: string;
+  /** 舊版批改結果才有的欄位，保留以相容既有資料 */
+  answerFeedback?: string;
+  /** 舊版批改結果才有的欄位，保留以相容既有資料 */
+  improvementSuggestions?: string;
   flashcards: Array<{
     front: string;
     back: string;

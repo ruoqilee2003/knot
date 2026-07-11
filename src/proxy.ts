@@ -9,10 +9,10 @@ function isPublicPath(pathname: string) {
   return false;
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const sessionToken = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const isAuthenticated = isSessionTokenValid(sessionToken);
+  const isAuthenticated = await isSessionTokenValid(sessionToken);
 
   if (pathname === "/login" && isAuthenticated) {
     return NextResponse.redirect(new URL("/", request.url));

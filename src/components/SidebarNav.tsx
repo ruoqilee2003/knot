@@ -8,7 +8,9 @@ const links = [
   { href: "/", label: "練習大廳" },
   { href: "/notes", label: "解答批改" },
   { href: "/flashcards", label: "關鍵字卡" },
+  { href: "/review", label: "字卡複習" },
   { href: "/keyword-notes", label: "重點筆記" },
+  { href: "/stats", label: "統計儀表板" },
 ];
 
 export function SidebarNav() {
@@ -87,7 +89,7 @@ export function SidebarNav() {
       </nav>
       <div className="hidden border-t border-stone-200 px-4 py-3 md:block">
         <p className="text-xs leading-relaxed text-stone-500">
-          草稿儲存在本機瀏覽器；正式送出由 Gemini 批改。
+          作答內容會自動儲存；正式送出由 Gemini 批改。
         </p>
         <button
           type="button"
