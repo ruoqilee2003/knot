@@ -85,6 +85,7 @@ function HallPageContent() {
   } | null>(null);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
+  const [deleteArchivedDialogOpen, setDeleteArchivedDialogOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
   const loadArchiveStatus = useCallback(async () => {
@@ -169,7 +170,7 @@ function HallPageContent() {
   }, [subjectFilter, keywordFilter, archaeologyFilter]);
 
   const runArchiveAction = useCallback(
-    async (action: "archiveAll" | "restoreAll") => {
+    async (action: "archiveAll" | "restoreAll" | "deleteAllArchived") => {
       setArchiving(true);
       setLoadError(null);
       try {
@@ -186,6 +187,7 @@ function HallPageContent() {
         }
         setArchiveDialogOpen(false);
         setRestoreDialogOpen(false);
+        setDeleteArchivedDialogOpen(false);
         await Promise.all([load(), loadArchiveStatus()]);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "封存操作失敗");
@@ -424,6 +426,16 @@ function HallPageContent() {
               還原封存（{archiveStatus.archivedCount}）
             </button>
           )}
+          {archiveStatus && archiveStatus.archivedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setDeleteArchivedDialogOpen(true)}
+              disabled={archiving}
+              className="rounded-xl border border-red-300 bg-red-50 px-4 py-2.5 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+            >
+              刪除所有封存（{archiveStatus.archivedCount}）
+            </button>
+          )}
           {archiveStatus && archiveStatus.activeCount > 0 && (
             <button
               type="button"
@@ -491,6 +503,18 @@ function HallPageContent() {
         onConfirm={() => {
           if (archiving) return;
           void runArchiveAction("restoreAll");
+        }}
+      />
+      <ConfirmDeleteDialog
+        open={deleteArchivedDialogOpen}
+        title="刪除所有封存題目"
+        description={`此動作無法復原，將永久刪除 ${archiveStatus?.archivedCount ?? 0} 題封存題目，以及對應的作答紀錄、字卡、批改與筆記。`}
+        confirmLabel={archiving ? "刪除中…" : "確認永久刪除"}
+        busy={archiving}
+        onCancel={() => setDeleteArchivedDialogOpen(false)}
+        onConfirm={() => {
+          if (archiving) return;
+          void runArchiveAction("deleteAllArchived");
         }}
       />
 

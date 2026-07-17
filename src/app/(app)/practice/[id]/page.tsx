@@ -1,10 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useParams } from "next/navigation";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { TableEditorModal } from "@/components/TableEditorModal";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseStorage } from "@/lib/firebase";
 import type { AnalysisResult } from "@/types/analysis";
@@ -123,6 +131,7 @@ export default function PracticePage() {
   const [timerRunning, setTimerRunning] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [selectedWordCount, setSelectedWordCount] = useState(0);
+  const [tableModalOpen, setTableModalOpen] = useState(false);
   const answerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const initialLoadedRef = useRef(false);
   const lastSyncedSnapshotRef = useRef("");
@@ -882,6 +891,69 @@ export default function PracticePage() {
     }
   }, [analysis, question, id, answerText, displayPreview]);
 
+  const insertTableMarkdown = useCallback(
+    (tableMarkdown: string) => {
+      const textarea = answerTextareaRef.current;
+      const start = textarea?.selectionStart ?? answerText.length;
+      const end = textarea?.selectionEnd ?? answerText.length;
+      const before = answerText.slice(0, start);
+      const after = answerText.slice(end);
+      const needsLeadingNewline = before.length > 0 && !before.endsWith("\n");
+      const template = `${needsLeadingNewline ? "\n" : ""}${tableMarkdown}`;
+      const nextText = `${before}${template}${after}`;
+      setAnswerText(nextText);
+      setTableModalOpen(false);
+      const cursorPos = before.length + template.length;
+      requestAnimationFrame(() => {
+        textarea?.focus();
+        textarea?.setSelectionRange(cursorPos, cursorPos);
+      });
+    },
+    [answerText]
+  );
+
+  // Shift+Enter 時若目前行是 "1. " 或 "(1) " 開頭的列點，自動接續下一個編號；
+  // 若該列點內容是空的則視為結束列點，直接移除標記換行
+  const continueListOnEnter = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const textarea = e.currentTarget;
+      if (textarea.selectionStart !== textarea.selectionEnd) return false;
+      const cursor = textarea.selectionStart;
+      const value = textarea.value;
+      const lineStart = value.lastIndexOf("\n", cursor - 1) + 1;
+      const currentLine = value.slice(lineStart, cursor);
+
+      const numberedMatch = currentLine.match(/^(\d+)\.\s(.*)$/);
+      const parenMatch = currentLine.match(/^\((\d+)\)\s(.*)$/);
+      const match = numberedMatch ?? parenMatch;
+      if (!match) return false;
+
+      e.preventDefault();
+      const [, numStr, rest] = match;
+
+      if (rest.trim() === "") {
+        const nextText = value.slice(0, lineStart) + value.slice(cursor);
+        setAnswerText(nextText);
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(lineStart, lineStart);
+        });
+        return true;
+      }
+
+      const nextNum = Number(numStr) + 1;
+      const marker = numberedMatch ? `${nextNum}. ` : `(${nextNum}) `;
+      const insertText = `\n${marker}`;
+      const nextText = value.slice(0, cursor) + insertText + value.slice(cursor);
+      setAnswerText(nextText);
+      const nextCursor = cursor + insertText.length;
+      requestAnimationFrame(() => {
+        textarea.setSelectionRange(nextCursor, nextCursor);
+      });
+      return true;
+    },
+    []
+  );
+
   const answerWordCount = countWithoutWhitespace(answerText);
   const updateSelectedWordCount = useCallback(() => {
     const textarea = answerTextareaRef.current;
@@ -1083,9 +1155,31 @@ export default function PracticePage() {
             )}
           </div>
 
+          {!readOnly && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-stone-500">
+                打「1.」＋空格會自動變列點，接著 Shift+Enter 換下一點會自動編號
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTableModalOpen(true)}
+                  disabled={analyzing}
+                  className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  ＋ 插入比較表格
+                </button>
+              </div>
+            </div>
+          )}
+          <TableEditorModal
+            open={tableModalOpen}
+            onCancel={() => setTableModalOpen(false)}
+            onInsert={insertTableMarkdown}
+          />
           <textarea
             ref={answerTextareaRef}
-            className={`mt-4 min-h-[420px] w-full overflow-y-auto rounded-xl border border-stone-300 p-4 text-sm leading-relaxed text-stone-900 shadow-inner outline-none ring-stone-400 focus:ring-2 ${
+            className={`${readOnly ? "mt-4" : "mt-2"} min-h-[420px] w-full overflow-y-auto rounded-xl border border-stone-300 p-4 text-sm leading-relaxed text-stone-900 shadow-inner outline-none ring-stone-400 focus:ring-2 ${
               readOnly ? "bg-stone-50" : "bg-white/95"
             }`}
             placeholder="在此輸入申論草稿..."
@@ -1102,6 +1196,15 @@ export default function PracticePage() {
             onSelect={updateSelectedWordCount}
             onKeyDownCapture={(e) => {
               const key = e.key.toLowerCase();
+              if (
+                key === "enter" &&
+                e.shiftKey &&
+                !e.ctrlKey &&
+                !e.metaKey &&
+                !readOnly
+              ) {
+                if (continueListOnEnter(e)) return;
+              }
               if ((e.ctrlKey || e.metaKey) && key === "s") {
                 e.preventDefault();
                 e.stopPropagation();
