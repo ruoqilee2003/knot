@@ -477,12 +477,18 @@ export default function SkeletonReviewPage() {
                   Topic
                 </p>
                 <div className="flex flex-1 flex-col items-center justify-center text-center">
-                  <p className="text-3xl font-semibold leading-snug text-stone-900">
-                    {current.topic}
-                  </p>
-                  {current.topicEn && (
-                    <p className="mt-2 text-xl font-medium text-stone-500">
-                      {current.topicEn}
+                  {current.topicEn ? (
+                    <>
+                      <p className="text-3xl font-semibold leading-snug text-stone-900">
+                        {current.topicEn}
+                      </p>
+                      <p className="mt-2 text-xl font-medium text-stone-500">
+                        {current.topic}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-3xl font-semibold leading-snug text-stone-900">
+                      {current.topic}
                     </p>
                   )}
                 </div>
