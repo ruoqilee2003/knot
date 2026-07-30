@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 
 type KeyPointItem = {
   questionId: string;
@@ -43,15 +44,11 @@ export default function KeyPointsPage() {
     };
   }, []);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(items.map((item) => item.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [items]);
+  const subjects = PRESET_SUBJECTS;
 
   const visibleItems = useMemo(() => {
     if (subjectFilter === "all") return items;
-    return items.filter((item) => item.subject === subjectFilter);
+    return items.filter((item) => subjectsMatch(item.subject, subjectFilter));
   }, [items, subjectFilter]);
 
   const totalPoints = useMemo(

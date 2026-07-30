@@ -1,5 +1,8 @@
+import { PRESET_SUBJECTS } from "@/lib/subjects";
+
 export const MAX_HEAT = 3;
-export const SKELETON_SUBJECTS = ["資通網路", "資通安全", "資通庫應用", "作業系統"];
+/** @deprecated 請改用 PRESET_SUBJECTS；保留別名以免舊 import 壞掉 */
+export const SKELETON_SUBJECTS = PRESET_SUBJECTS;
 
 /** 半形標點自動轉全形，供定義/分類/逐點展開/結論等輸入框使用 */
 export function toFullWidthPunctuation(value: string): string {
@@ -68,6 +71,7 @@ type RawBlockInput = {
  * 把 API 收到的原始 block 陣列清理成可以直接寫進 Firestore 的形狀。
  * 刻意不要輸出 `undefined` 的 note/hint 欄位——Firestore 的 set() 不接受 undefined 值，
  * 只能整個省略該欄位（用可選欄位語意，不是「欄位存在但值是 undefined」）。
+ * 列點只要有重點或提示其中之一就保留（允許先只填提示）。
  */
 export function sanitizeBlocks(input: RawBlockInput[] | undefined): SkeletonBlock[] {
   if (!Array.isArray(input)) return [];
@@ -86,7 +90,7 @@ export function sanitizeBlocks(input: RawBlockInput[] | undefined): SkeletonBloc
               const hint = typeof point.hint === "string" ? point.hint.trim() : "";
               return hint ? { key, hint } : { key };
             })
-            .filter((point) => point.key)
+            .filter((point) => point.key || point.hint)
         : [];
       const base = { label, count, points };
       return note ? { ...base, note } : base;

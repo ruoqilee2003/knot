@@ -8,7 +8,15 @@ import {
   parseKeywordInput,
   sanitizeKeyword,
 } from "@/lib/keywords";
-import { SKELETON_SUBJECTS } from "@/lib/skeleton-cards";
+import {
+  SKELETON_SUBJECTS,
+  type SkeletonBlock,
+} from "@/lib/skeleton-cards";
+import {
+  PRESET_SUBJECTS,
+  normalizeSubject,
+  subjectsMatch,
+} from "@/lib/subjects";
 
 type SkeletonCard = {
   id: string;
@@ -21,12 +29,18 @@ type SkeletonCard = {
   heat: number;
   isStub: boolean;
   confidence: number;
+  definition: string;
+  blocks: SkeletonBlock[];
+  conclusion: string;
+  prompts: string[];
 };
 
 type ArchaeologyQuestion = {
   id: string;
   questionText: string;
   year: number;
+  keywordDisplay: string[];
+  isArchaeology: boolean;
 };
 
 type Duplicate = { id: string; topic: string; matchedKeywords: string[] };
@@ -39,7 +53,7 @@ export default function SkeletonCardsPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [formOpen, setFormOpen] = useState(false);
-  const [formSubject, setFormSubject] = useState(SKELETON_SUBJECTS[0]);
+  const [formSubject, setFormSubject] = useState<string>(SKELETON_SUBJECTS[0]);
   const [formTopic, setFormTopic] = useState("");
   const [formTopicEn, setFormTopicEn] = useState("");
   const [formKeywordInput, setFormKeywordInput] = useState("");
@@ -49,6 +63,8 @@ export default function SkeletonCardsPage() {
   const [selectedArchIds, setSelectedArchIds] = useState<Set<string>>(new Set());
   const [formBusy, setFormBusy] = useState(false);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
+  const [selectingForExport, setSelectingForExport] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -63,7 +79,7 @@ export default function SkeletonCardsPage() {
       const data = (await response.json()) as Array<Record<string, unknown>>;
       const list: SkeletonCard[] = data.map((x) => ({
         id: String(x.id ?? ""),
-        subject: String(x.subject ?? ""),
+        subject: normalizeSubject(String(x.subject ?? "")),
         topic: String(x.topic ?? ""),
         topicEn: String(x.topicEn ?? ""),
         keywordDisplay: Array.isArray(x.keywordDisplay)
@@ -84,6 +100,14 @@ export default function SkeletonCardsPage() {
         heat: typeof x.heat === "number" ? x.heat : 0,
         isStub: x.isStub !== false,
         confidence: typeof x.confidence === "number" ? x.confidence : 0,
+        definition: String(x.definition ?? ""),
+        blocks: Array.isArray(x.blocks) ? (x.blocks as SkeletonBlock[]) : [],
+        conclusion: String(x.conclusion ?? ""),
+        prompts: Array.isArray(x.prompts)
+          ? (x.prompts as unknown[]).filter(
+              (item): item is string => typeof item === "string"
+            )
+          : [],
       }));
       setCards(list);
     } catch (e) {
@@ -97,7 +121,7 @@ export default function SkeletonCardsPage() {
     void load();
   }, [load]);
 
-  // 表單開著且選了科目時，載入該科目的考古題供連結
+  // 表單開著且選了科目時，載入該科目題目供連結（不限考古標記）
   useEffect(() => {
     if (!formOpen || !formSubject.trim()) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -109,7 +133,6 @@ export default function SkeletonCardsPage() {
       try {
         const params = new URLSearchParams({
           subject: formSubject.trim(),
-          archaeology: "1",
         });
         const response = await fetch(`/api/questions?${params.toString()}`);
         if (!response.ok) return;
@@ -120,6 +143,12 @@ export default function SkeletonCardsPage() {
             id: String(item.id ?? ""),
             questionText: String(item.questionText ?? ""),
             year: typeof item.year === "number" ? item.year : 0,
+            keywordDisplay: Array.isArray(item.latestKeywordDisplay)
+              ? (item.latestKeywordDisplay as unknown[]).filter(
+                  (k): k is string => typeof k === "string"
+                )
+              : [],
+            isArchaeology: item.isArchaeology === true,
           }))
         );
       } catch {
@@ -131,17 +160,65 @@ export default function SkeletonCardsPage() {
     };
   }, [formOpen, formSubject]);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(cards.map((card) => card.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [cards]);
+  // 表單關鍵字跟題目有交集時自動勾選
+  const formKeywordsForMatch = useMemo(
+    () =>
+      dedupeKeywordsCaseInsensitive([
+        ...formKeywords,
+        ...parseKeywordInput(formKeywordInput),
+      ]),
+    [formKeywords, formKeywordInput]
+  );
+
+  const matchedArchQuestionIds = useMemo(() => {
+    const cardKeywords = new Set(
+      formKeywordsForMatch.map((k) => k.toLowerCase())
+    );
+    if (cardKeywords.size === 0) return new Set<string>();
+    return new Set(
+      archQuestions
+        .filter((q) =>
+          q.keywordDisplay.some((k) => cardKeywords.has(k.toLowerCase()))
+        )
+        .map((q) => q.id)
+    );
+  }, [archQuestions, formKeywordsForMatch]);
+
+  const linkableQuestions = useMemo(() => {
+    return archQuestions
+      .filter(
+        (q) => q.isArchaeology || matchedArchQuestionIds.has(q.id)
+      )
+      .sort((a, b) => {
+        const aMatch = matchedArchQuestionIds.has(a.id) ? 0 : 1;
+        const bMatch = matchedArchQuestionIds.has(b.id) ? 0 : 1;
+        if (aMatch !== bMatch) return aMatch - bMatch;
+        return (b.year || 0) - (a.year || 0);
+      });
+  }, [archQuestions, matchedArchQuestionIds]);
+
+  useEffect(() => {
+    if (matchedArchQuestionIds.size === 0) return;
+    setSelectedArchIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const qid of matchedArchQuestionIds) {
+        if (!next.has(qid)) {
+          next.add(qid);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [matchedArchQuestionIds]);
+
+  const subjects = PRESET_SUBJECTS;
 
   const visibleCards = useMemo(() => {
     const pool =
       subjectFilter === "all"
         ? cards
-        : cards.filter((card) => card.subject === subjectFilter);
+        : cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
     return [...pool].sort(
       (a, b) => b.heat - a.heat || a.topic.localeCompare(b.topic, "zh-Hant")
     );
@@ -302,6 +379,7 @@ export default function SkeletonCardsPage() {
       });
       if (!response.ok) throw new Error("刪除骨架卡失敗");
       setCards((prev) => prev.filter((card) => card.id !== id));
+      setSelectedIds((prev) => prev.filter((item) => item !== id));
       setDeleteTargetId(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "刪除骨架卡失敗");
@@ -309,6 +387,125 @@ export default function SkeletonCardsPage() {
       setDeleting(false);
     }
   }, []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }, []);
+
+  const allVisibleSelected =
+    visibleCards.length > 0 &&
+    visibleCards.every((card) => selectedIds.includes(card.id));
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelectedIds((prev) => {
+      const visibleIds = visibleCards.map((card) => card.id);
+      if (visibleIds.every((id) => prev.includes(id))) {
+        return prev.filter((id) => !visibleIds.includes(id));
+      }
+      return Array.from(new Set([...prev, ...visibleIds]));
+    });
+  }, [visibleCards]);
+
+  const startSelectingForExport = useCallback(() => {
+    setSelectingForExport(true);
+    setSelectedIds([]);
+  }, []);
+
+  const cancelSelectingForExport = useCallback(() => {
+    setSelectingForExport(false);
+    setSelectedIds([]);
+  }, []);
+
+  const exportMarkdown = useCallback(() => {
+    if (selectingForExport && selectedIds.length === 0) {
+      setError("請先選取要匯出的骨架卡");
+      return;
+    }
+    const exportCards =
+      selectingForExport && selectedIds.length > 0
+        ? visibleCards.filter((card) => selectedIds.includes(card.id))
+        : visibleCards;
+    if (exportCards.length === 0) {
+      setError("目前沒有可匯出的骨架卡");
+      return;
+    }
+    const heading =
+      subjectFilter === "all" ? "# 骨架卡" : `# 骨架卡（${subjectFilter}）`;
+    const body = exportCards
+      .map((card, idx) => {
+        const blocksMd =
+          card.blocks.length === 0
+            ? "（尚無分類）"
+            : card.blocks
+                .map((block) => {
+                  const points =
+                    block.points.length === 0
+                      ? "  - （尚未展開）"
+                      : block.points
+                          .map((point) => {
+                            const key = point.key.trim();
+                            const hint = (point.hint ?? "").trim();
+                            if (key && hint) return `  - **${key}**：${hint}`;
+                            if (key) return `  - **${key}**`;
+                            return `  - → ${hint}`;
+                          })
+                          .join("\n");
+                  return `### ${block.label}${
+                    block.note ? `（${block.note}）` : ""
+                  }（${block.count}）\n\n${points}`;
+                })
+                .join("\n\n");
+        const promptsMd =
+          card.prompts.length > 0
+            ? card.prompts.map((p) => `- ${p}`).join("\n")
+            : "（無）";
+        return [
+          `## ${idx + 1}. ${card.topic}${card.topicEn ? ` / ${card.topicEn}` : ""}`,
+          "",
+          `> 考科：${card.subject}${card.isStub ? "・卡樁" : "・完整"}`,
+          card.keywordDisplay.length > 0
+            ? `> 關鍵字：${card.keywordDisplay.map((k) => `#${k}`).join(" ")}`
+            : null,
+          "",
+          "### ① 定義",
+          "",
+          card.definition || "（尚未填寫）",
+          "",
+          "### ② 分類架構與逐點展開",
+          "",
+          blocksMd,
+          "",
+          "### ③ 結論／實務",
+          "",
+          card.conclusion || "（尚未填寫）",
+          "",
+          "### 問法",
+          "",
+          promptsMd,
+          "",
+        ]
+          .filter((line) => line !== null)
+          .join("\n");
+      })
+      .join("\n---\n\n");
+    const markdown = `${heading}\n\n${body}`;
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const now = new Date().toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = `knot-skeleton-cards-${now}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    if (selectingForExport) {
+      setSelectingForExport(false);
+      setSelectedIds([]);
+    }
+  }, [visibleCards, subjectFilter, selectingForExport, selectedIds]);
 
   return (
     <div className="w-full px-4 py-8 md:px-6">
@@ -355,6 +552,59 @@ export default function SkeletonCardsPage() {
             ))}
           </select>
         </label>
+        {!selectingForExport ? (
+          <>
+            <button
+              type="button"
+              onClick={startSelectingForExport}
+              disabled={visibleCards.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              選取匯出
+            </button>
+            <button
+              type="button"
+              onClick={exportMarkdown}
+              disabled={visibleCards.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              匯出目前列表
+            </button>
+          </>
+        ) : (
+          <>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAllVisible}
+                className="h-4 w-4 rounded border-stone-300 accent-stone-700"
+              />
+              全選目前列表
+            </label>
+            <button
+              type="button"
+              onClick={exportMarkdown}
+              disabled={selectedIds.length === 0}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${
+                selectedIds.length > 0
+                  ? "border-stone-300 bg-white text-stone-700 hover:bg-stone-50"
+                  : "border-stone-200 bg-stone-100 text-stone-500"
+              }`}
+            >
+              {selectedIds.length > 0
+                ? `匯出已選取（${selectedIds.length}）`
+                : "請先選取骨架卡"}
+            </button>
+            <button
+              type="button"
+              onClick={cancelSelectingForExport}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50"
+            >
+              取消選取
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => setFormOpen((prev) => !prev)}
@@ -466,13 +716,16 @@ export default function SkeletonCardsPage() {
             </div>
           </div>
 
-          {formSubject.trim() && archQuestions.length > 0 && (
+          {formSubject.trim() && linkableQuestions.length > 0 && (
             <div className="mt-3">
               <p className="text-sm font-medium text-stone-700">
-                連結考古題（選填，佐證用）
+                連結題目／問法（選填，佐證用）
+              </p>
+              <p className="mt-0.5 text-xs text-stone-500">
+                關鍵字相符的題目會自動勾選；標記為考古的題目也可手動勾選。
               </p>
               <div className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-stone-200 bg-white p-2">
-                {archQuestions.map((q) => (
+                {linkableQuestions.map((q) => (
                   <label
                     key={q.id}
                     className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-xs text-stone-700 hover:bg-stone-50"
@@ -493,6 +746,16 @@ export default function SkeletonCardsPage() {
                     <span>
                       {q.year ? `${q.year}・` : ""}
                       {q.questionText.slice(0, 60)}
+                      {matchedArchQuestionIds.has(q.id) && (
+                        <span className="ml-1.5 rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-800">
+                          關鍵字相符
+                        </span>
+                      )}
+                      {q.isArchaeology && (
+                        <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                          考古
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}
@@ -561,12 +824,27 @@ export default function SkeletonCardsPage() {
       )}
 
       <ul className="mt-6 space-y-3">
-        {visibleCards.map((card) => (
+        {visibleCards.map((card) => {
+          const selected = selectedIds.includes(card.id);
+          return (
           <li
             key={card.id}
-            className="rounded-2xl border border-stone-200 bg-[#fffdf8] p-4 shadow-sm"
+            className={`rounded-2xl border bg-[#fffdf8] p-4 shadow-sm ${
+              selectingForExport && selected
+                ? "border-stone-400 ring-2 ring-stone-300"
+                : "border-stone-200"
+            }`}
           >
             <div className="flex flex-wrap items-center gap-2">
+              {selectingForExport && (
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() => toggleSelect(card.id)}
+                  className="h-4 w-4 rounded border-stone-300 accent-stone-700"
+                  aria-label={`選取骨架卡：${card.topic}`}
+                />
+              )}
               <p className="text-xs font-medium text-stone-500">{card.subject}</p>
               {card.isStub ? (
                 <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-800">
@@ -644,7 +922,8 @@ export default function SkeletonCardsPage() {
               </button>
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       {visibleCards.length === 0 && !error && (

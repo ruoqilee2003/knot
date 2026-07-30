@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
+import { normalizeSubject } from "@/lib/subjects";
 
 export const runtime = "nodejs";
 
@@ -114,7 +115,7 @@ export async function PUT(request: Request, context: RouteContext) {
   const updates: Record<string, unknown> = {};
 
   if (typeof body.subject === "string") {
-    const subject = body.subject.trim();
+    const subject = normalizeSubject(body.subject);
     if (!subject) {
       return NextResponse.json({ error: "subject cannot be empty" }, { status: 400 });
     }

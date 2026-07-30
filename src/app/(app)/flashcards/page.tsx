@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 
 type Card = {
   id: string;
@@ -34,6 +35,18 @@ function flashcardsToMarkdown(cards: Card[]): string {
     .join("\n---\n\n");
 }
 
+function downloadMarkdown(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function FlashcardsPage() {
   const [cards, setCards] = useState<Card[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +58,8 @@ export default function FlashcardsPage() {
   const [draftFront, setDraftFront] = useState("");
   const [draftBack, setDraftBack] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [selectingForExport, setSelectingForExport] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -80,15 +95,11 @@ export default function FlashcardsPage() {
     void load();
   }, [load]);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(cards.map((card) => card.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [cards]);
+  const subjects = PRESET_SUBJECTS;
 
   const visibleCards = useMemo(() => {
     if (subjectFilter === "all") return cards;
-    return cards.filter((card) => card.subject === subjectFilter);
+    return cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
   }, [cards, subjectFilter]);
 
   const deleteCard = useCallback(async (id: string) => {
@@ -104,6 +115,7 @@ export default function FlashcardsPage() {
         throw new Error(payload?.error || "刪除字卡失敗");
       }
       setCards((prev) => prev.filter((card) => card.id !== id));
+      setSelectedIds((prev) => prev.filter((item) => item !== id));
       setDeleteTargetId(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "刪除字卡失敗");
@@ -166,25 +178,59 @@ export default function FlashcardsPage() {
     [draftFront, draftBack, cancelEditing]
   );
 
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }, []);
+
+  const allVisibleSelected =
+    visibleCards.length > 0 &&
+    visibleCards.every((card) => selectedIds.includes(card.id));
+
+  const toggleSelectAllVisible = useCallback(() => {
+    setSelectedIds((prev) => {
+      const visibleIds = visibleCards.map((card) => card.id);
+      if (visibleIds.every((id) => prev.includes(id))) {
+        return prev.filter((id) => !visibleIds.includes(id));
+      }
+      return Array.from(new Set([...prev, ...visibleIds]));
+    });
+  }, [visibleCards]);
+
+  const startSelectingForExport = useCallback(() => {
+    setSelectingForExport(true);
+    setSelectedIds([]);
+  }, []);
+
+  const cancelSelectingForExport = useCallback(() => {
+    setSelectingForExport(false);
+    setSelectedIds([]);
+  }, []);
+
   const exportMarkdown = useCallback(() => {
-    if (visibleCards.length === 0) {
+    if (selectingForExport && selectedIds.length === 0) {
+      setError("請先選取要匯出的字卡");
+      return;
+    }
+    const exportCards =
+      selectingForExport && selectedIds.length > 0
+        ? visibleCards.filter((card) => selectedIds.includes(card.id))
+        : visibleCards;
+    if (exportCards.length === 0) {
       setError("目前沒有可匯出的字卡");
       return;
     }
     const heading =
       subjectFilter === "all" ? "# 關鍵字卡" : `# 關鍵字卡（${subjectFilter}）`;
-    const markdown = `${heading}\n\n${flashcardsToMarkdown(visibleCards)}`;
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const markdown = `${heading}\n\n${flashcardsToMarkdown(exportCards)}`;
     const now = new Date().toISOString().replace(/[:.]/g, "-");
-    a.href = url;
-    a.download = `knot-flashcards-${now}.md`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }, [visibleCards, subjectFilter]);
+    downloadMarkdown(`knot-flashcards-${now}.md`, markdown);
+    if (selectingForExport) {
+      setSelectingForExport(false);
+      setSelectedIds([]);
+    }
+  }, [visibleCards, subjectFilter, selectingForExport, selectedIds]);
 
   return (
     <div className="w-full px-4 py-8 md:px-6">
@@ -211,14 +257,59 @@ export default function FlashcardsPage() {
           </select>
         </label>
 
-        <button
-          type="button"
-          onClick={exportMarkdown}
-          disabled={visibleCards.length === 0}
-          className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
-        >
-          匯出 Markdown
-        </button>
+        {!selectingForExport ? (
+          <>
+            <button
+              type="button"
+              onClick={startSelectingForExport}
+              disabled={visibleCards.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              選取匯出
+            </button>
+            <button
+              type="button"
+              onClick={exportMarkdown}
+              disabled={visibleCards.length === 0}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              匯出目前列表
+            </button>
+          </>
+        ) : (
+          <>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAllVisible}
+                className="h-4 w-4 rounded border-stone-300 accent-stone-700"
+              />
+              全選目前列表
+            </label>
+            <button
+              type="button"
+              onClick={exportMarkdown}
+              disabled={selectedIds.length === 0}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${
+                selectedIds.length > 0
+                  ? "border-stone-300 bg-white text-stone-700 hover:bg-stone-50"
+                  : "border-stone-200 bg-stone-100 text-stone-500"
+              }`}
+            >
+              {selectedIds.length > 0
+                ? `匯出已選取（${selectedIds.length}）`
+                : "請先選取字卡"}
+            </button>
+            <button
+              type="button"
+              onClick={cancelSelectingForExport}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-700 hover:bg-stone-50"
+            >
+              取消選取
+            </button>
+          </>
+        )}
 
         <Link
           href="/review"
@@ -253,12 +344,26 @@ export default function FlashcardsPage() {
         {visibleCards.map((c) => {
           const isEditing = editingId === c.id;
           const opened = openedIds.includes(c.id);
+          const selected = selectedIds.includes(c.id);
           return (
             <li
               key={c.id}
-              className="rounded-2xl border border-stone-200 bg-[#fffdf8] p-5 shadow-sm"
+              className={`rounded-2xl border bg-[#fffdf8] p-5 shadow-sm ${
+                selectingForExport && selected
+                  ? "border-stone-400 ring-2 ring-stone-300"
+                  : "border-stone-200"
+              }`}
             >
               <div className="flex flex-wrap items-center gap-2">
+                {selectingForExport && (
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleSelect(c.id)}
+                    className="h-4 w-4 rounded border-stone-300 accent-stone-700"
+                    aria-label={`選取字卡：${c.front.slice(0, 20)}`}
+                  />
+                )}
                 {c.subject && (
                   <p className="text-xs font-medium text-stone-500">
                     {c.subject}

@@ -21,6 +21,7 @@ import {
   saveHallScrollState,
   type HallScrollState,
 } from "@/lib/hall-scroll-restore";
+import { PRESET_SUBJECTS } from "@/lib/subjects";
 
 type Row = {
   id: string;
@@ -226,11 +227,7 @@ function HallPageContent() {
     persistHallScroll();
   }, [persistHallScroll]);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(rows.map((row) => row.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [rows]);
+  const subjects = PRESET_SUBJECTS;
 
   const visibleRows = useMemo(() => {
     const isFinished = (row: Row) =>

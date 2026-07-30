@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 
 type Card = {
   id: string;
@@ -95,18 +96,14 @@ export default function FlashcardReviewPage() {
     };
   }, []);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(cards.map((card) => card.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [cards]);
+  const subjects = PRESET_SUBJECTS;
 
   /** 目前科目底下可勾選的關鍵字（依出現次數排序） */
   const keywordOptions = useMemo(() => {
     const pool =
       subjectFilter === "all"
         ? cards
-        : cards.filter((card) => card.subject === subjectFilter);
+        : cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
     const counts = new Map<string, number>();
     for (const card of pool) {
       for (const keyword of card.keywords) {
@@ -133,7 +130,7 @@ export default function FlashcardReviewPage() {
     let pool =
       subjectFilter === "all"
         ? cards
-        : cards.filter((card) => card.subject === subjectFilter);
+        : cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
     if (selectedKeywords.size > 0) {
       pool = pool.filter((card) =>
         card.keywords.some((keyword) => selectedKeywords.has(keyword))

@@ -7,18 +7,52 @@ export type ActiveKeywordStat = {
   normalized: string;
 };
 
-/** 從未封存題目的 attempts 彙整關鍵字使用次數（每題每關鍵字計 1） */
+type KeywordCountMap = Map<string, { keyword: string; usageCount: number }>;
+
+function addKeywordsFromDisplayList(
+  counts: KeywordCountMap,
+  displayList: unknown
+) {
+  if (!Array.isArray(displayList)) return;
+  const seen = new Set<string>();
+  for (const raw of displayList) {
+    if (typeof raw !== "string") continue;
+    const normalized = normalizeKeyword(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    const keyword = sanitizeKeyword(raw);
+    const existing = counts.get(normalized);
+    if (existing) {
+      existing.usageCount += 1;
+    } else {
+      counts.set(normalized, { keyword, usageCount: 1 });
+    }
+  }
+}
+
+/**
+ * 彙整可用關鍵字：
+ * - 未封存題目的 attempts（每題每關鍵字計 1）
+ * - 骨架卡（每卡每關鍵字計 1）
+ */
 export async function getActiveKeywordStats(
   archivedIds: Set<string>,
   limit = 12
 ): Promise<ActiveKeywordStat[]> {
-  const attemptsSnap = await adminDb
-    .collection("attempts")
-    .select("keywords", "keywordDisplay")
-    .limit(2000)
-    .get();
+  const [attemptsSnap, skeletonSnap] = await Promise.all([
+    adminDb
+      .collection("attempts")
+      .select("keywords", "keywordDisplay")
+      .limit(2000)
+      .get(),
+    adminDb
+      .collection("skeletonCards")
+      .select("keywords", "keywordDisplay")
+      .limit(2000)
+      .get(),
+  ]);
 
-  const counts = new Map<string, { keyword: string; usageCount: number }>();
+  const counts: KeywordCountMap = new Map();
 
   for (const doc of attemptsSnap.docs) {
     if (archivedIds.has(doc.id)) continue;
@@ -28,24 +62,19 @@ export async function getActiveKeywordStats(
     };
     const displayList = Array.isArray(data.keywordDisplay)
       ? data.keywordDisplay
-      : Array.isArray(data.keywords)
-        ? data.keywords
-        : [];
+      : data.keywords;
+    addKeywordsFromDisplayList(counts, displayList);
+  }
 
-    const seenInAttempt = new Set<string>();
-    for (const raw of displayList) {
-      if (typeof raw !== "string") continue;
-      const normalized = normalizeKeyword(raw);
-      if (!normalized || seenInAttempt.has(normalized)) continue;
-      seenInAttempt.add(normalized);
-      const keyword = sanitizeKeyword(raw);
-      const existing = counts.get(normalized);
-      if (existing) {
-        existing.usageCount += 1;
-      } else {
-        counts.set(normalized, { keyword, usageCount: 1 });
-      }
-    }
+  for (const doc of skeletonSnap.docs) {
+    const data = doc.data() as {
+      keywords?: unknown;
+      keywordDisplay?: unknown;
+    };
+    const displayList = Array.isArray(data.keywordDisplay)
+      ? data.keywordDisplay
+      : data.keywords;
+    addKeywordsFromDisplayList(counts, displayList);
   }
 
   return Array.from(counts.entries())

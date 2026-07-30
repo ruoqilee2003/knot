@@ -13,6 +13,7 @@ import {
   toFullWidthPunctuation,
   type SkeletonBlock,
 } from "@/lib/skeleton-cards";
+import { PRESET_SUBJECTS, normalizeSubject } from "@/lib/subjects";
 
 type RelatedCard = {
   id: string;
@@ -27,6 +28,7 @@ type ArchaeologyQuestion = {
   questionText: string;
   year: number;
   keywordDisplay: string[];
+  isArchaeology: boolean;
 };
 
 export default function SkeletonCardEditorPage() {
@@ -71,7 +73,7 @@ export default function SkeletonCardEditorPage() {
         throw new Error(payload?.error || "讀取骨架卡失敗");
       }
       const data = (await response.json()) as Record<string, unknown>;
-      setSubject(String(data.subject ?? ""));
+      setSubject(normalizeSubject(String(data.subject ?? "")) || PRESET_SUBJECTS[0]);
       setTopic(String(data.topic ?? ""));
       setTopicEn(String(data.topicEn ?? ""));
       setKeywords(
@@ -131,9 +133,9 @@ export default function SkeletonCardEditorPage() {
     let cancelled = false;
     (async () => {
       try {
+        // 同科全部題目：關鍵字相符即可自動連結（不限「考古」標記）
         const params = new URLSearchParams({
           subject: subject.trim(),
-          archaeology: "1",
         });
         const response = await fetch(`/api/questions?${params.toString()}`);
         if (!response.ok) return;
@@ -149,6 +151,7 @@ export default function SkeletonCardEditorPage() {
                   (k): k is string => typeof k === "string"
                 )
               : [],
+            isArchaeology: item.isArchaeology === true,
           }))
         );
       } catch {
@@ -160,7 +163,7 @@ export default function SkeletonCardEditorPage() {
     };
   }, [subject]);
 
-  // 考古題關鍵字跟卡片關鍵字有交集時自動連結，並把題幹帶入問法
+  // 題目關鍵字跟卡片關鍵字有交集時自動連結，並把題幹帶入問法
   const matchedArchQuestionIds = useMemo(() => {
     const cardKeywords = new Set(keywords.map((k) => k.toLowerCase()));
     if (cardKeywords.size === 0) return new Set<string>();
@@ -172,6 +175,20 @@ export default function SkeletonCardEditorPage() {
         .map((q) => q.id)
     );
   }, [archQuestions, keywords]);
+
+  // 清單顯示：關鍵字相符的題目 + 標記為考古的題目（供手動勾選）
+  const linkableQuestions = useMemo(() => {
+    return archQuestions
+      .filter(
+        (q) => q.isArchaeology || matchedArchQuestionIds.has(q.id)
+      )
+      .sort((a, b) => {
+        const aMatch = matchedArchQuestionIds.has(a.id) ? 0 : 1;
+        const bMatch = matchedArchQuestionIds.has(b.id) ? 0 : 1;
+        if (aMatch !== bMatch) return aMatch - bMatch;
+        return (b.year || 0) - (a.year || 0);
+      });
+  }, [archQuestions, matchedArchQuestionIds]);
 
   useEffect(() => {
     if (matchedArchQuestionIds.size === 0) return;
@@ -366,6 +383,7 @@ export default function SkeletonCardEditorPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          subject: subject.trim(),
           topic: topic.trim(),
           topicEn: topicEn.trim(),
           keywords: finalKeywords,
@@ -385,8 +403,11 @@ export default function SkeletonCardEditorPage() {
         throw new Error(payload?.error || "儲存失敗");
       }
       const data = (await response.json()) as { isStub: boolean };
+      setSaveAsStub(data.isStub !== false);
       setSavedMessage(data.isStub ? "已儲存為卡樁" : "已儲存為完整骨架卡");
       setMode("view");
+      // 重新載入以帶入伺服器端依關鍵字自動補上的考古題連結
+      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "儲存失敗");
     } finally {
@@ -394,6 +415,7 @@ export default function SkeletonCardEditorPage() {
     }
   }, [
     id,
+    subject,
     topic,
     topicEn,
     applyPendingKeyword,
@@ -404,6 +426,7 @@ export default function SkeletonCardEditorPage() {
     blocks,
     conclusion,
     saveAsStub,
+    load,
   ]);
 
   if (loading) {
@@ -523,7 +546,9 @@ export default function SkeletonCardEditorPage() {
                   <ul className="mt-2 space-y-1">
                     {block.points.map((point, j) => (
                       <li key={j} className="text-sm text-stone-700">
-                        <span className="font-semibold">{point.key}</span>
+                        {point.key.trim() && (
+                          <span className="font-semibold">{point.key}</span>
+                        )}
                         {point.hint && (
                           <span className="text-stone-500"> → {point.hint}</span>
                         )}
@@ -579,11 +604,23 @@ export default function SkeletonCardEditorPage() {
       <div className="mt-6 grid gap-3 sm:grid-cols-2">
         <div>
           <label className="text-sm font-medium text-stone-700">科目</label>
-          <input
-            value={subject}
+          <select
+            value={
+              PRESET_SUBJECTS.includes(
+                subject as (typeof PRESET_SUBJECTS)[number]
+              )
+                ? subject
+                : PRESET_SUBJECTS[0]
+            }
             onChange={(e) => setSubject(e.target.value)}
             className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2"
-          />
+          >
+            {PRESET_SUBJECTS.map((preset) => (
+              <option key={preset} value={preset}>
+                {preset}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="text-sm font-medium text-stone-700">主題名稱（中文）</label>
@@ -777,7 +814,7 @@ export default function SkeletonCardEditorPage() {
         </div>
       </div>
 
-      {archQuestions.length > 0 && (
+      {linkableQuestions.length > 0 && (
         <div className="mt-4">
           <button
             type="button"
@@ -785,7 +822,7 @@ export default function SkeletonCardEditorPage() {
             className="flex w-full items-center justify-between rounded-lg border border-stone-200 bg-white px-3 py-2 text-left hover:bg-stone-50"
           >
             <span className="text-sm font-medium text-stone-700">
-              連結考古題／問法
+              連結題目／問法
               {archaeologyQuestionIds.size > 0 && (
                 <span className="ml-1.5 text-xs font-normal text-stone-500">
                   已連結 {archaeologyQuestionIds.size} 題
@@ -799,10 +836,10 @@ export default function SkeletonCardEditorPage() {
           {archLinksOpen && (
             <>
               <p className="mt-2 text-xs text-stone-500">
-                關鍵字跟這張卡相符的考古題會自動連結並帶入問法，也可以手動勾選其他題目。
+                同科且關鍵字相符的題目會自動連結並帶入問法；標記為考古的題目也可手動勾選。
               </p>
               <div className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-stone-200 bg-white p-2">
-                {archQuestions.map((q) => (
+                {linkableQuestions.map((q) => (
                   <label
                     key={q.id}
                     className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-xs text-stone-700 hover:bg-stone-50"
@@ -826,6 +863,11 @@ export default function SkeletonCardEditorPage() {
                       {matchedArchQuestionIds.has(q.id) && (
                         <span className="ml-1.5 rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-800">
                           關鍵字相符
+                        </span>
+                      )}
+                      {q.isArchaeology && (
+                        <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                          考古
                         </span>
                       )}
                     </span>

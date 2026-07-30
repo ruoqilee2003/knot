@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFirebaseStorage } from "@/lib/firebase";
+import { PRESET_SUBJECTS } from "@/lib/subjects";
 
 function fileToBase64(file: File): Promise<{ base64: string; mimeType: string }> {
   return new Promise((resolve, reject) => {
@@ -26,8 +27,6 @@ type Props = {
   onClose: () => void;
   onCreated: () => void;
 };
-
-const PRESET_SUBJECTS = ["資通網路", "資通安全", "資料庫應用", "作業系統"];
 
 type DuplicateMatch = {
   id: string;

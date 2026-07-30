@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
+import { PRESET_SUBJECTS, normalizeSubject } from "@/lib/subjects";
 
 type QuestionDraft = {
   id: string;
@@ -28,7 +29,12 @@ export function EditQuestionModal({
   onDelete,
 }: Props) {
   const [questionId, setQuestionId] = useState(question?.id ?? "");
-  const [subject, setSubject] = useState(question?.subject ?? "");
+  const [subject, setSubject] = useState(() => {
+    const normalized = normalizeSubject(question?.subject ?? "");
+    return PRESET_SUBJECTS.includes(normalized as (typeof PRESET_SUBJECTS)[number])
+      ? normalized
+      : PRESET_SUBJECTS[0];
+  });
   const [year, setYear] = useState(question?.year ?? new Date().getFullYear());
   const [score, setScore] = useState(question?.score ?? 100);
   const [questionText, setQuestionText] = useState(question?.questionText ?? "");
@@ -109,12 +115,17 @@ export function EditQuestionModal({
           </div>
           <div>
             <label className="text-sm font-medium text-stone-700">科目</label>
-            <input
+            <select
               className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-stone-900 outline-none ring-stone-400 focus:ring-2"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              placeholder="例如：行政法"
-            />
+            >
+              {PRESET_SUBJECTS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {preset}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>

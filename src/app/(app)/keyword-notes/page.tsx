@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 
 type PersonalNote = {
   id: string;
@@ -55,16 +56,17 @@ export default function KeywordNotesPage() {
     void load();
   }, [load]);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(notes.map((note) => note.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [notes]);
+  const subjects = PRESET_SUBJECTS;
 
   const visibleNotes = useMemo(() => {
     const normalizedKeyword = keywordFilter.trim().toLowerCase();
     return notes.filter((note) => {
-      if (subjectFilter !== "all" && note.subject !== subjectFilter) return false;
+      if (
+        subjectFilter !== "all" &&
+        !subjectsMatch(note.subject, subjectFilter)
+      ) {
+        return false;
+      }
       if (!normalizedKeyword) return true;
       return (note.keywordDisplay ?? []).some((kw) =>
         kw.toLowerCase().includes(normalizedKeyword)

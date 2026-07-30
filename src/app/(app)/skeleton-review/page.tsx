@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { sortForReview, type SkeletonBlock } from "@/lib/skeleton-cards";
+import { PRESET_SUBJECTS, normalizeSubject, subjectsMatch } from "@/lib/subjects";
 
 type Card = {
   id: string;
@@ -60,7 +61,7 @@ export default function SkeletonReviewPage() {
         const list: Card[] = data
           .map((x) => ({
             id: String(x.id ?? ""),
-            subject: String(x.subject ?? ""),
+            subject: normalizeSubject(String(x.subject ?? "")),
             topic: String(x.topic ?? ""),
             topicEn: String(x.topicEn ?? ""),
             keywords: Array.isArray(x.keywordDisplay)
@@ -97,17 +98,13 @@ export default function SkeletonReviewPage() {
     };
   }, []);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(cards.map((card) => card.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [cards]);
+  const subjects = PRESET_SUBJECTS;
 
   const keywordOptions = useMemo(() => {
     const pool =
       subjectFilter === "all"
         ? cards
-        : cards.filter((card) => card.subject === subjectFilter);
+        : cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
     const counts = new Map<string, number>();
     for (const card of pool) {
       for (const keyword of card.keywords) {
@@ -143,7 +140,7 @@ export default function SkeletonReviewPage() {
     let pool =
       subjectFilter === "all"
         ? cards
-        : cards.filter((card) => card.subject === subjectFilter);
+        : cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
     if (selectedKeywords.size > 0) {
       pool = pool.filter((card) =>
         card.keywords.some((keyword) => selectedKeywords.has(keyword))
@@ -524,7 +521,9 @@ export default function SkeletonReviewPage() {
                       <ul className="mt-1 w-full space-y-1 text-left">
                         {block.points.map((point, j) => (
                           <li key={j} className="w-full text-left text-sm text-stone-800">
-                            <span className="font-semibold">{point.key}</span>
+                            {point.key.trim() && (
+                              <span className="font-semibold">{point.key}</span>
+                            )}
                             {point.hint && (
                               <span className="text-stone-500"> → {point.hint}</span>
                             )}

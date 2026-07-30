@@ -12,6 +12,8 @@ import {
   validateBlocks,
   type SkeletonBlock,
 } from "@/lib/skeleton-cards";
+import { isPresetSubject, normalizeSubject } from "@/lib/subjects";
+import { findArchaeologyQuestionIdsByKeywords } from "@/lib/archaeology-link";
 
 export const runtime = "nodejs";
 
@@ -23,6 +25,7 @@ type UpdateSkeletonCardBody = {
   confidence?: number;
   heatIncrement?: boolean;
   heatDelta?: number;
+  subject?: string;
   topic?: string;
   topicEn?: string;
   keywords?: string[];
@@ -127,6 +130,17 @@ export async function PUT(request: Request, context: RouteContext) {
   // 內容編輯模式
   const updates: Record<string, unknown> = {};
 
+  if (typeof body.subject === "string") {
+    const subject = normalizeSubject(body.subject);
+    if (!isPresetSubject(subject)) {
+      return NextResponse.json(
+        { error: "科目必須是：資通網路、資通安全、資料庫應用、作業系統" },
+        { status: 400 }
+      );
+    }
+    updates.subject = subject;
+  }
+
   if (typeof body.topic === "string") {
     const topic = body.topic.trim();
     if (!topic) {
@@ -225,11 +239,41 @@ export async function PUT(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "找不到骨架卡" }, { status: 404 });
     }
     const existing = snap.data() as {
+      subject?: string;
+      keywords?: string[];
+      archaeologyQuestionIds?: string[];
       definition?: string;
       conclusion?: string;
       blocks?: SkeletonBlock[];
       relatedCardIds?: string[];
     };
+
+    // 關鍵字變更或儲存連結清單時，把同科、關鍵字有交集的考古題併入（只加不強制刪）
+    if (
+      Array.isArray(body.keywords) ||
+      Array.isArray(body.archaeologyQuestionIds)
+    ) {
+      const subjectForMatch =
+        typeof updates.subject === "string"
+          ? updates.subject
+          : String(existing.subject ?? "");
+      const keywordsForMatch = Array.isArray(updates.keywords)
+        ? (updates.keywords as string[])
+        : normalizeKeywords(existing.keywords);
+      const autoLinked = await findArchaeologyQuestionIdsByKeywords(
+        subjectForMatch,
+        keywordsForMatch
+      );
+      const explicit = Array.isArray(updates.archaeologyQuestionIds)
+        ? (updates.archaeologyQuestionIds as string[])
+        : Array.isArray(existing.archaeologyQuestionIds)
+          ? existing.archaeologyQuestionIds
+          : [];
+      updates.archaeologyQuestionIds = Array.from(
+        new Set([...explicit, ...autoLinked])
+      );
+    }
+
     const merged = {
       definition:
         typeof updates.definition === "string"

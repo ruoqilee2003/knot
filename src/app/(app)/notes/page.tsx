@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 
 type Note = {
   id: string;
@@ -140,15 +141,11 @@ export default function NotesPage() {
     void load();
   }, [load]);
 
-  const subjects = useMemo(() => {
-    return Array.from(
-      new Set(notes.map((note) => note.subject.trim()).filter(Boolean))
-    ).sort((a, b) => a.localeCompare(b, "zh-Hant"));
-  }, [notes]);
+  const subjects = PRESET_SUBJECTS;
 
   const visibleNotes = useMemo(() => {
     if (subjectFilter === "all") return notes;
-    return notes.filter((note) => note.subject === subjectFilter);
+    return notes.filter((note) => subjectsMatch(note.subject, subjectFilter));
   }, [notes, subjectFilter]);
 
   const deleteNote = useCallback(async (id: string) => {

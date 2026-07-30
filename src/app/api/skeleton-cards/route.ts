@@ -11,6 +11,8 @@ import {
   sanitizeBlocks,
   validateBlocks,
 } from "@/lib/skeleton-cards";
+import { isPresetSubject, normalizeSubject } from "@/lib/subjects";
+import { findArchaeologyQuestionIdsByKeywords } from "@/lib/archaeology-link";
 
 export const runtime = "nodejs";
 
@@ -86,7 +88,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const subject =
+    typeof body.subject === "string" ? normalizeSubject(body.subject) : "";
   const topic = typeof body.topic === "string" ? body.topic.trim() : "";
   const topicEn = typeof body.topicEn === "string" ? body.topicEn.trim() : "";
   const keywordDisplay = dedupeKeywordsCaseInsensitive(
@@ -100,6 +103,12 @@ export async function POST(request: Request) {
       { status: 400 }
     );
   }
+  if (!isPresetSubject(subject)) {
+    return NextResponse.json(
+      { error: "科目必須是：資通網路、資通安全、資料庫應用、作業系統" },
+      { status: 400 }
+    );
+  }
   if (keywords.length === 0) {
     return NextResponse.json(
       { error: "至少需要一個關鍵字（骨架卡的主索引）" },
@@ -107,15 +116,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const archaeologyQuestionIds = Array.from(
-    new Set(
-      Array.isArray(body.archaeologyQuestionIds)
-        ? body.archaeologyQuestionIds.filter(
-            (id): id is string => typeof id === "string" && id.trim().length > 0
-          )
-        : []
-    )
-  );
+  const explicitArchaeologyQuestionIds = Array.isArray(body.archaeologyQuestionIds)
+    ? body.archaeologyQuestionIds.filter(
+        (id): id is string => typeof id === "string" && id.trim().length > 0
+      )
+    : [];
 
   const definition =
     typeof body.definition === "string" ? body.definition.trim() : "";
@@ -138,6 +143,14 @@ export async function POST(request: Request) {
   const allowDuplicate = body.allowDuplicate === true;
 
   try {
+    // 關鍵字有交集的既有考古題自動連結（先有考古題再補骨架卡也能接上）
+    const archaeologyQuestionIds = Array.from(
+      new Set([
+        ...explicitArchaeologyQuestionIds,
+        ...(await findArchaeologyQuestionIdsByKeywords(subject, keywords)),
+      ])
+    );
+
     let prompts = Array.isArray(body.prompts)
       ? body.prompts
           .map((item) => (typeof item === "string" ? item.trim() : ""))

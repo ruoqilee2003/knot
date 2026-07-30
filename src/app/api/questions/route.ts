@@ -8,6 +8,7 @@ import {
 } from "@/lib/keywords";
 import { isQuestionArchived } from "@/lib/archive";
 import { textSimilarity } from "@/lib/similarity";
+import { normalizeSubject, subjectQueryValues } from "@/lib/subjects";
 
 export const runtime = "nodejs";
 
@@ -66,23 +67,49 @@ export async function GET(request: Request) {
       searchParams.get("includeArchived") === "1" ||
       searchParams.get("includeArchived") === "true";
 
-    let query: FirebaseFirestore.Query = adminDb.collection("questions");
-    if (subject) {
-      query = query.where("subject", "==", subject);
+    const subjectValues = subject ? subjectQueryValues(subject) : [];
+    let docs: Array<{ id: string } & Omit<QuestionDoc, "id">> = [];
+
+    if (subjectValues.length === 0) {
+      const snapshot = await adminDb
+        .collection("questions")
+        .orderBy("createdAt", "desc")
+        .limit(300)
+        .get();
+      docs = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as Omit<QuestionDoc, "id">),
+      }));
+    } else if (subjectValues.length === 1) {
+      const snapshot = await adminDb
+        .collection("questions")
+        .where("subject", "==", subjectValues[0])
+        .get();
+      docs = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as Omit<QuestionDoc, "id">),
+      }));
     } else {
-      query = query.orderBy("createdAt", "desc");
-    }
-    if (!subject) {
-      query = query.limit(300);
+      // 含舊別名時分別查詢再合併（例如 資料庫應用 ↔ 資通庫應用）
+      const snapshots = await Promise.all(
+        subjectValues.map((value) =>
+          adminDb.collection("questions").where("subject", "==", value).get()
+        )
+      );
+      const seen = new Set<string>();
+      for (const snapshot of snapshots) {
+        for (const doc of snapshot.docs) {
+          if (seen.has(doc.id)) continue;
+          seen.add(doc.id);
+          docs.push({
+            id: doc.id,
+            ...(doc.data() as Omit<QuestionDoc, "id">),
+          });
+        }
+      }
     }
 
-    const snapshot = await query.get();
-    let docs = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...(doc.data() as Omit<QuestionDoc, "id">),
-    }));
-
-    if (subject) {
+    if (subjectValues.length > 0) {
       docs = docs
         .sort(
           (a, b) =>
@@ -109,18 +136,24 @@ export async function GET(request: Request) {
     }
 
     // 狀態與關鍵字優先使用 question 文件上的鏡射欄位（attempts PUT 時會同步），
-    // 只對缺鏡射欄位的舊資料用單次 getAll 批次補查，避免每題各查一次的 N+1 讀取。
-    const docsMissingStatus = docs.filter(
-      (doc) =>
-        typeof doc.latestAttemptStatus !== "string" &&
-        typeof doc.latestDraft?.status !== "string"
-    );
+    // 缺狀態或缺關鍵字鏡射的舊資料用單次 getAll 批次補查（避免 N+1）。
+    const docsNeedingFallback = docs.filter((doc) => {
+      const hasStatus =
+        typeof doc.latestAttemptStatus === "string" ||
+        typeof doc.latestDraft?.status === "string";
+      const hasMirroredKeywords =
+        (Array.isArray(doc.latestAttemptKeywordDisplay) &&
+          doc.latestAttemptKeywordDisplay.length > 0) ||
+        (Array.isArray(doc.latestAttemptKeywords) &&
+          doc.latestAttemptKeywords.length > 0);
+      return !hasStatus || !hasMirroredKeywords;
+    });
     const fallbackAttempts = new Map<
       string,
       { status?: string; keywords?: string[]; keywordDisplay?: string[] }
     >();
-    if (docsMissingStatus.length > 0) {
-      const refs = docsMissingStatus.map((doc) =>
+    if (docsNeedingFallback.length > 0) {
+      const refs = docsNeedingFallback.map((doc) =>
         adminDb.collection("attempts").doc(doc.id)
       );
       const snapshots = await adminDb.getAll(...refs);
@@ -203,7 +236,8 @@ export async function POST(request: Request) {
   const questionId =
     typeof body.questionId === "string" ? body.questionId.trim() : "";
   const title = typeof body.title === "string" ? body.title.trim() : "";
-  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const subject =
+    typeof body.subject === "string" ? normalizeSubject(body.subject) : "";
   const year =
     typeof body.year === "number" && Number.isFinite(body.year)
       ? body.year
