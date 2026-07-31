@@ -53,7 +53,7 @@ export default function SkeletonCardsPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [formOpen, setFormOpen] = useState(false);
-  const [formSubject, setFormSubject] = useState<string>(SKELETON_SUBJECTS[0]);
+  const [formSubject, setFormSubject] = useState("");
   const [formTopic, setFormTopic] = useState("");
   const [formTopicEn, setFormTopicEn] = useState("");
   const [formKeywordInput, setFormKeywordInput] = useState("");
@@ -326,7 +326,7 @@ export default function SkeletonCardsPage() {
         }
         const created = (await response.json()) as { id: string };
         setFormOpen(false);
-        setFormSubject(SKELETON_SUBJECTS[0]);
+        setFormSubject("");
         setFormTopic("");
         setFormTopicEn("");
         setFormKeywords([]);
@@ -624,6 +624,9 @@ export default function SkeletonCardsPage() {
                 onChange={(e) => setFormSubject(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none ring-stone-400 focus:ring-2"
               >
+                <option value="" disabled>
+                  請選擇
+                </option>
                 {SKELETON_SUBJECTS.map((subject) => (
                   <option key={subject} value={subject}>
                     {subject}

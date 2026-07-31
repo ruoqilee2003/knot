@@ -94,6 +94,7 @@ export async function PUT(request: Request, context: RouteContext) {
         {
           confidence: body.confidence,
           lastReviewedAt: FieldValue.serverTimestamp(),
+          reviewCount: FieldValue.increment(1),
         },
         { merge: true }
       );

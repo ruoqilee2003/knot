@@ -9,6 +9,9 @@ type Stats = {
     completed: number;
     analyzed: number;
     flashcards: number;
+    skeletonCards: number;
+    flashcardReviews: number;
+    skeletonReviews: number;
   };
   subjects: Array<{
     subject: string;
@@ -16,8 +19,9 @@ type Stats = {
     completed: number;
     analyzed: number;
     flashcards: number;
+    skeletonCards: number;
   }>;
-  weeklyActivity: Array<{ weekStart: string; count: number }>;
+  topActivity: Array<{ date: string; count: number }>;
   topKeywords: Array<{ keyword: string; usageCount: number }>;
 };
 
@@ -54,8 +58,8 @@ export default function StatsPage() {
     };
   }, []);
 
-  const maxWeeklyCount = stats
-    ? Math.max(1, ...stats.weeklyActivity.map((week) => week.count))
+  const maxDailyCount = stats
+    ? Math.max(1, ...stats.topActivity.map((day) => day.count))
     : 1;
 
   return (
@@ -79,7 +83,7 @@ export default function StatsPage() {
 
       {!stats && !error && (
         <div className="mt-10 grid grid-cols-2 gap-4 md:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
+          {[0, 1, 2, 3, 4, 5, 6].map((i) => (
             <div
               key={i}
               className="h-24 animate-pulse rounded-2xl border border-stone-200/80 bg-stone-100/70"
@@ -103,6 +107,15 @@ export default function StatsPage() {
               hint={`${percent(stats.totals.analyzed, stats.totals.questions)}%`}
             />
             <SummaryCard label="字卡總數" value={stats.totals.flashcards} />
+            <SummaryCard label="骨架卡總數" value={stats.totals.skeletonCards} />
+            <SummaryCard
+              label="字卡複習次數"
+              value={stats.totals.flashcardReviews}
+            />
+            <SummaryCard
+              label="骨架複習次數"
+              value={stats.totals.skeletonReviews}
+            />
           </div>
 
           <section className="mt-10">
@@ -124,7 +137,8 @@ export default function StatsPage() {
                       </p>
                       <p className="text-xs text-stone-500">
                         共 {subject.total} 題・已完成 {subject.completed}・已批改{" "}
-                        {subject.analyzed}・字卡 {subject.flashcards} 張
+                        {subject.analyzed}・字卡 {subject.flashcards} 張・骨架卡{" "}
+                        {subject.skeletonCards} 張
                       </p>
                     </div>
                     <div className="mt-3 h-2.5 w-full overflow-hidden rounded-full bg-stone-100">
@@ -155,34 +169,42 @@ export default function StatsPage() {
 
           <section className="mt-10">
             <h2 className="font-serif text-xl font-semibold text-stone-900">
-              近八週練習活動
+              近期最活躍前 5 天
             </h2>
             <div className="mt-4 rounded-2xl border border-stone-200/80 bg-[#fffdf8] p-5 shadow-sm">
-              <div className="flex h-36 items-end gap-3">
-                {stats.weeklyActivity.map((week) => (
-                  <div
-                    key={week.weekStart}
-                    className="flex flex-1 flex-col items-center gap-1"
-                  >
-                    <span className="text-xs text-stone-600">{week.count}</span>
-                    <div
-                      className="w-full rounded-t-md bg-stone-700/80"
-                      style={{
-                        height: `${Math.max(
-                          week.count > 0 ? 8 : 2,
-                          (week.count / maxWeeklyCount) * 100
-                        )}px`,
-                      }}
-                    />
-                    <span className="text-[10px] text-stone-400">
-                      {week.weekStart}
-                    </span>
+              {stats.topActivity.length === 0 ? (
+                <p className="text-sm text-stone-500">尚無練習紀錄。</p>
+              ) : (
+                <>
+                  <div className="flex h-36 items-end justify-center gap-6">
+                    {stats.topActivity.map((day) => (
+                      <div
+                        key={day.date}
+                        className="flex flex-col items-center gap-1"
+                      >
+                        <span className="text-xs text-stone-600">
+                          {day.count}
+                        </span>
+                        <div
+                          className="w-16 rounded-t-md bg-stone-700/80"
+                          style={{
+                            height: `${Math.max(
+                              day.count > 0 ? 8 : 2,
+                              (day.count / maxDailyCount) * 100
+                            )}px`,
+                          }}
+                        />
+                        <span className="text-[10px] text-stone-400">
+                          {day.date}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <p className="mt-3 text-xs text-stone-500">
-                以每題作答紀錄的最後更新時間計算（週一為每週起點）。
-              </p>
+                  <p className="mt-3 text-xs text-stone-500">
+                    以作答紀錄與骨架卡的更新時間統計，顯示活動次數最多的前 5 天。
+                  </p>
+                </>
+              )}
             </div>
           </section>
 

@@ -11,6 +11,7 @@ type SubjectStat = {
   completed: number;
   analyzed: number;
   flashcards: number;
+  skeletonCards: number;
 };
 
 const DONE_STATUSES = new Set(["completed", "analyzed", "flashcards_ready"]);
@@ -28,26 +29,43 @@ function toMillis(value: unknown): number {
 
 export async function GET() {
   try {
-    const [questionsSnap, attemptsSnap, flashcardsSnap] = await Promise.all([
-      adminDb
-        .collection("questions")
-        .select("subject", "latestAttemptStatus", "latestDraft", "archived")
-        .limit(2000)
-        .get(),
-      adminDb
-        .collection("attempts")
-        .select("subject", "status", "updatedAt")
-        .limit(2000)
-        .get(),
-      adminDb.collection("flashcards").select("subject", "questionId").limit(5000).get(),
-    ]);
+    const [questionsSnap, attemptsSnap, flashcardsSnap, skeletonCardsSnap] =
+      await Promise.all([
+        adminDb
+          .collection("questions")
+          .select("subject", "latestAttemptStatus", "latestDraft", "archived")
+          .limit(2000)
+          .get(),
+        adminDb
+          .collection("attempts")
+          .select("subject", "status", "updatedAt")
+          .limit(2000)
+          .get(),
+        adminDb
+          .collection("flashcards")
+          .select("subject", "questionId", "rememberCount", "forgetCount")
+          .limit(5000)
+          .get(),
+        adminDb
+          .collection("skeletonCards")
+          .select("subject", "updatedAt", "confidence", "reviewCount")
+          .limit(2000)
+          .get(),
+      ]);
 
     const subjectMap = new Map<string, SubjectStat>();
     const ensureSubject = (subject: string): SubjectStat => {
       const key = subject || "未分類";
       let stat = subjectMap.get(key);
       if (!stat) {
-        stat = { subject: key, total: 0, completed: 0, analyzed: 0, flashcards: 0 };
+        stat = {
+          subject: key,
+          total: 0,
+          completed: 0,
+          analyzed: 0,
+          flashcards: 0,
+          skeletonCards: 0,
+        };
         subjectMap.set(key, stat);
       }
       return stat;
@@ -59,6 +77,9 @@ export async function GET() {
     let totalCompleted = 0;
     let totalAnalyzed = 0;
     let totalFlashcards = 0;
+    let totalSkeletonCards = 0;
+    let totalFlashcardReviews = 0;
+    let totalSkeletonReviews = 0;
 
     for (const doc of questionsSnap.docs) {
       const data = doc.data() as {
@@ -90,7 +111,12 @@ export async function GET() {
     }
 
     for (const doc of flashcardsSnap.docs) {
-      const data = doc.data() as { subject?: string; questionId?: string };
+      const data = doc.data() as {
+        subject?: string;
+        questionId?: string;
+        rememberCount?: number;
+        forgetCount?: number;
+      };
       const questionId =
         typeof data.questionId === "string" ? data.questionId : "";
       if (questionId && archivedIds.has(questionId)) continue;
@@ -99,38 +125,61 @@ export async function GET() {
       );
       stat.flashcards += 1;
       totalFlashcards += 1;
+
+      const rememberCount =
+        typeof data.rememberCount === "number" ? data.rememberCount : 0;
+      const forgetCount =
+        typeof data.forgetCount === "number" ? data.forgetCount : 0;
+      totalFlashcardReviews += rememberCount + forgetCount;
     }
 
-    // 最近 8 週的作答活動（依 attempt 最後更新時間）
-    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    const now = new Date();
-    const dayOfWeek = (now.getDay() + 6) % 7; // 週一為每週起點
-    const currentWeekStart = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() - dayOfWeek
-    ).getTime();
-    const weeks = Array.from({ length: 8 }, (_, i) => {
-      const start = currentWeekStart - (7 - i) * WEEK_MS;
-      return { start, count: 0 };
-    });
+    // 最近活動（依日期統計作答 + 骨架卡）
+    const dailyActivity = new Map<string, number>();
+
+    for (const doc of skeletonCardsSnap.docs) {
+      const data = doc.data() as {
+        subject?: string;
+        updatedAt?: unknown;
+        confidence?: number;
+        reviewCount?: number;
+      };
+      const stat = ensureSubject(
+        typeof data.subject === "string" ? data.subject.trim() : ""
+      );
+      stat.skeletonCards += 1;
+      totalSkeletonCards += 1;
+
+      // 累計複習次數
+      if (typeof data.reviewCount === "number" && data.reviewCount > 0) {
+        totalSkeletonReviews += data.reviewCount;
+      }
+
+      const updatedAt = toMillis(data.updatedAt);
+      if (updatedAt) {
+        const date = new Date(updatedAt);
+        const dayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+        dailyActivity.set(dayKey, (dailyActivity.get(dayKey) || 0) + 1);
+      }
+    }
 
     for (const doc of attemptsSnap.docs) {
       if (archivedIds.has(doc.id)) continue;
       const updatedAt = toMillis((doc.data() as { updatedAt?: unknown }).updatedAt);
       if (!updatedAt) continue;
-      for (const week of weeks) {
-        if (updatedAt >= week.start && updatedAt < week.start + WEEK_MS) {
-          week.count += 1;
-          break;
-        }
-      }
+      const date = new Date(updatedAt);
+      const dayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      dailyActivity.set(dayKey, (dailyActivity.get(dayKey) || 0) + 1);
     }
 
-    const weeklyActivity = weeks.map((week) => {
-      const date = new Date(week.start);
-      const label = `${date.getMonth() + 1}/${date.getDate()}`;
-      return { weekStart: label, count: week.count };
+    // 取前 5 天
+    const topDays = Array.from(dailyActivity.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    const topActivity = topDays.map(([dayKey, count]) => {
+      const [, month, day] = dayKey.split("-");
+      return { date: `${parseInt(month)}/${parseInt(day)}`, count };
     });
 
     const topKeywords = (await getActiveKeywordStats(archivedIds, 12)).map(
@@ -146,7 +195,8 @@ export async function GET() {
           subject.total > 0 ||
           subject.completed > 0 ||
           subject.analyzed > 0 ||
-          subject.flashcards > 0
+          subject.flashcards > 0 ||
+          subject.skeletonCards > 0
       )
       .sort((a, b) => b.total - a.total);
 
@@ -156,9 +206,12 @@ export async function GET() {
         completed: totalCompleted,
         analyzed: totalAnalyzed,
         flashcards: totalFlashcards,
+        skeletonCards: totalSkeletonCards,
+        flashcardReviews: totalFlashcardReviews,
+        skeletonReviews: totalSkeletonReviews,
       },
       subjects,
-      weeklyActivity,
+      topActivity,
       topKeywords,
     });
   } catch (error) {
