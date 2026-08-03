@@ -25,7 +25,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 | `/review` | 字卡複習：先設定範圍（科目、勾選關鍵字、全部/加強不記得），開始後隨機洗牌翻卡並回答「記得/不記得」（記入 rememberCount/forgetCount），結束有結算畫面。鍵盤：空白翻面、1 記得、2 不記得、←→ 切換 |
 | `/skeleton-cards` | 骨架卡列表：依科目分組、顯示卡樁/完整徽章與待補完進度；新增表單科目為固定選單（資通網路/資通安全/資料庫應用/作業系統），關鍵字輸入會從 `/api/keywords` 帶出既有關鍵字建議；同科關鍵字有交集的題目會自動勾選連結（不限考古標記；考古題也可手動勾選） |
 | `/skeleton-cards/[id]` | 骨架卡編輯：定義（無字數限制）→ 可複數組的分類架構＋逐點展開（`points.length` 不可超過 `count`）→ 結論；同科且關鍵字有交集的題目會自動連結並把題幹帶入問法（不限「考古」標記；清單另含標記為考古的題目可供手動勾選），也可手動調整；可連結其他骨架卡（`relatedCardIds`，雙向同步）；儲存時可手動選擇要存成「卡樁」或「骨架卡」，不再單純依內容完整度自動判斷 |
-| `/skeleton-review` | 骨架卡回想模式複習：依科目/關鍵字/複習輪次（R1 全部／R2 信心<2／R3 信心=0）篩選，牌組依熱度＋信心排序（非洗牌），正面只給問法與分類鉤子，翻面才顯示完整內容，三段自評（秒答/想得出來/空白）寫回 `confidence`。鍵盤：空白翻面、1/2/3 自評、←→ 切換 |
+| `/skeleton-review` | 骨架卡回想模式複習：依科目/關鍵字/複習輪次（R1 全部／R2 信心<2／R3 信心=0）篩選，牌組每次開始複習隨機洗牌，正面只給問法與分類鉤子，翻面才顯示完整內容，三段自評（秒答/想得出來/空白）寫回 `confidence`。鍵盤：空白翻面、1/2/3 自評、←→ 切換 |
 | `/keypoints` | 速讀重點：彙整所有已批改題目的 examKeyPoints，依科目篩選、往下滑速讀 |
 | `/notes`、`/keyword-notes` | 解答批改筆記、重點筆記列表 |
 | `/stats` | 統計儀表板：總覽數字、各科進度條、近八週活動、常用關鍵字 |
@@ -33,14 +33,14 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ## API routes（`src/app/api/`，皆 `runtime = "nodejs"`）
 
-- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；支援 `?archaeology=1` 篩選考古題；預設排除 `archived: true` 的封存題目（`?includeArchived=1` 可含封存）；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；封存題目不參與重複比對）
+- `questions`：GET 列表（用題目文件上的鏡射欄位，勿改回逐題查 attempts 的 N+1）；支援 `?archaeology=1` 篩選考古題；預設排除 `archived: true` 的封存題目（`?includeArchived=1` 可含封存）；帶 `?search=` 全文比對 questionText、`?limit=`／`?offset=` 分頁、`?sort=year-desc|year-asc|unfinished-first` 排序時回傳 `{ items, total }`（不帶這些參數則維持回傳純陣列，供其他呼叫端相容）；POST 建題（內建重複題目偵測：同科目 bigram 相似度 ≥ 0.6 回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；封存題目不參與重複比對）
 - `attempts/[questionId]`：一題一份作答紀錄（文件 ID = questionId）。PUT 會同步鏡射 `latestAttemptStatus`/`latestAttemptKeywords` 回 questions，且只對「新加入」的關鍵字遞增 usageCount（勿改壞，自動儲存會頻繁 PUT）；帶 `clearAnalysis: true` 可刪除已存的批改結果。**狀態防護**：只要 attempt 仍存有 analysis，PUT 送 `draft`/`completed` 會被伺服器升回 `analyzed`/`flashcards_ready`（避免自動儲存/暫存把「已批改」徽章洗掉），實際生效狀態以回應的 `status` 為準；`scripts/repair-attempt-status.mjs` 可修復歷史錯誤鏡射
 - `analyze`：Gemini 批改（`GEMINI_MODEL`），輸出 `{ examKeyPoints: string[](2~6), flashcards: {front,back}[](2~6) }`，依題目配分決定數量、超限截斷。規則要求僅從考生答案萃取、不額外補充知識。可帶 `answerImageUrl`（本機 `/...` 路徑）或 `answerImageBase64`（手寫圖），並傳 `score` 供配分參考
 - `ocr`：題目圖片辨識文字（`GEMINI_OCR_MODEL`，最便宜的 Flash-Lite），圖片只進記憶體不儲存，新增題目視窗的「掃描圖片辨識文字」按鈕會呼叫
-- `flashcards`：GET 列表（會批次附帶各題 attempts 的 `keywordDisplay` 供複習頁篩選）/ POST 寫入（同題同內容去重；若題目 `isArchaeology` 為 true 則字卡寫入 `important: true`）/ `DELETE ?questionId=` 清除該題全部字卡
+- `flashcards`：GET 列表（會批次附帶各題 attempts 的 `keywordDisplay` 供複習頁篩選；帶 `?subject=`／`?search=`（比對 front/back）／`?limit=`／`?offset=` 時回傳 `{ items, total }`，不帶則回傳純陣列）/ POST 寫入（同題同內容去重；若題目 `isArchaeology` 為 true 則字卡寫入 `important: true`）/ `DELETE ?questionId=` 清除該題全部字卡
 - `flashcards/[id]`：PUT 帶 `review: "remember" | "forget"` 會遞增 `rememberCount`/`forgetCount` 並更新 `lastReviewedAt`（優先於其他欄位更新）；一般 PUT 更新 front/back；DELETE 刪單張
 - `keypoints`：GET 彙整已批改 attempts 的 `analysis.examKeyPoints`，批次補題目文字（getAll，勿改成 N+1）
-- `skeleton-cards`：GET 列表（`?subject=` 篩選）/ POST 建卡（`keywords` 為主索引，至少 1 個，同科目關鍵字有交集回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；會依關鍵字自動連結同科題目並併入 `archaeologyQuestionIds`——不要求 `isArchaeology`，帶明確 ID 且未帶 `prompts` 時自動用題幹前 40 字產生問法草稿）；`isStub` 預設由 `src/lib/skeleton-cards.ts` 的 `isCardComplete()` 依內容完整度自動判斷（建立時無法覆寫，只有編輯 PUT 可以）
+- `skeleton-cards`：GET 列表（`?subject=` 篩選；帶 `?search=`（比對 topic/topicEn/definition/keywordDisplay）／`?limit=`／`?offset=` 時依熱度排序後回傳 `{ items, total, stubTotal }`，不帶則回傳純陣列）/ POST 建卡（`keywords` 為主索引，至少 1 個，同科目關鍵字有交集回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；會依關鍵字自動連結同科題目並併入 `archaeologyQuestionIds`——不要求 `isArchaeology`，帶明確 ID 且未帶 `prompts` 時自動用題幹前 40 字產生問法草稿）；`isStub` 預設由 `src/lib/skeleton-cards.ts` 的 `isCardComplete()` 依內容完整度自動判斷（建立時無法覆寫，只有編輯 PUT 可以）
 - `skeleton-cards/[id]`：GET 單卡 / DELETE 刪除 / PUT 三種模式：`{confidence:0|1|2}` 快速寫回複習信心值、`{heatDelta:number}`（或舊版 `{heatIncrement:true}`）調整熱度 ±1（夾在 0-3）、其餘欄位為內容編輯（`definition` 無字數限制；帶 `isStub:boolean` 可手動覆寫要存成卡樁還是骨架卡，不帶則沿用 `isCardComplete()` 自動判斷；帶 `keywords` 或 `archaeologyQuestionIds` 時會把同科關鍵字相符的題目併入連結；帶 `relatedCardIds` 會雙向同步——用 batch 把自己的 id 加進/移出對方文件的 `relatedCardIds`）
 - `study-notes`、`personal-notes`、`keywords`、`export/questions`、`stats`、`auth/login`、`auth/logout`
 - `archive`：GET 回傳 `{ activeCount, archivedCount }`；POST `{ action: "archiveAll" | "restoreAll" }` 批次封存/還原全部題目（資料保留，僅從各列表隱藏）；POST `{ action: "deleteAllArchived" }` 永久刪除所有封存題目及其 attempts/flashcards/studyNotes/personalNotes（資料真的會消失，練習大廳有二次確認對話框）。CLI：`node scripts/archive-all-questions.mjs [--dry-run] [--restore]`

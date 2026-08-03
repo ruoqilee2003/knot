@@ -66,6 +66,16 @@ export async function GET(request: Request) {
     const includeArchived =
       searchParams.get("includeArchived") === "1" ||
       searchParams.get("includeArchived") === "true";
+    const search = searchParams.get("search")?.trim().toLowerCase() ?? "";
+    const sort = searchParams.get("sort") ?? "";
+    const limitParam = searchParams.get("limit");
+    const offsetParam = searchParams.get("offset");
+    const paginate = limitParam !== null;
+    const pageLimit = Math.min(
+      100,
+      Math.max(1, Number.parseInt(limitParam ?? "10", 10) || 10)
+    );
+    const pageOffset = Math.max(0, Number.parseInt(offsetParam ?? "0", 10) || 0);
 
     const subjectValues = subject ? subjectQueryValues(subject) : [];
     let docs: Array<{ id: string } & Omit<QuestionDoc, "id">> = [];
@@ -215,7 +225,32 @@ export async function GET(request: Request) {
       };
     });
 
-    return NextResponse.json(data);
+    const filtered = search
+      ? data.filter((item) => item.questionText.toLowerCase().includes(search))
+      : data;
+
+    if (!paginate) {
+      return NextResponse.json(filtered);
+    }
+
+    const isFinished = (status: string | null) =>
+      status === "completed" || status === "analyzed" || status === "flashcards_ready";
+    let sorted = filtered;
+    if (sort === "year-asc" || sort === "year-desc") {
+      sorted = [...filtered].sort((a, b) =>
+        sort === "year-asc" ? a.year - b.year : b.year - a.year
+      );
+    } else if (sort === "unfinished-first") {
+      sorted = [...filtered].sort(
+        (a, b) =>
+          Number(isFinished(a.latestAttemptStatus)) -
+          Number(isFinished(b.latestAttemptStatus))
+      );
+    }
+
+    const total = sorted.length;
+    const items = sorted.slice(pageOffset, pageOffset + pageLimit);
+    return NextResponse.json({ items, total });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch questions";

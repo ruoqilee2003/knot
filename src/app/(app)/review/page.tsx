@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
+import { shuffle } from "@/lib/shuffle";
 
 type Card = {
   id: string;
@@ -18,15 +19,6 @@ type Card = {
 
 type Mode = "all" | "forgotten";
 type Phase = "setup" | "reviewing" | "finished";
-
-function shuffle<T>(input: T[]): T[] {
-  const out = [...input];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j]!, out[i]!];
-  }
-  return out;
-}
 
 function isWeakCard(card: Card): boolean {
   return card.forgetCount > 0 && card.forgetCount >= card.rememberCount;

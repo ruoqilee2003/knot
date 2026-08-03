@@ -98,14 +98,3 @@ export function sanitizeBlocks(input: RawBlockInput[] | undefined): SkeletonBloc
     .filter((block) => block.label);
 }
 
-export type ReviewableCard = {
-  heat: number;
-  confidence: number;
-};
-
-/** 複習牌組排序：熱度遞減、同熱度信心遞增（刻意不洗牌，優先複習高熱度＋低信心的卡） */
-export function sortForReview<T extends ReviewableCard>(cards: T[]): T[] {
-  return [...cards].sort(
-    (a, b) => b.heat - a.heat || a.confidence - b.confidence
-  );
-}

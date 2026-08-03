@@ -49,6 +49,15 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const subject = searchParams.get("subject")?.trim() ?? "";
+    const search = searchParams.get("search")?.trim().toLowerCase() ?? "";
+    const limitParam = searchParams.get("limit");
+    const offsetParam = searchParams.get("offset");
+    const paginate = limitParam !== null;
+    const pageLimit = Math.min(
+      100,
+      Math.max(1, Number.parseInt(limitParam ?? "10", 10) || 10)
+    );
+    const pageOffset = Math.max(0, Number.parseInt(offsetParam ?? "0", 10) || 0);
 
     // 有 subject 篩選時不能跟 orderBy 疊在一起查（會需要額外的 Firestore 複合索引），
     // 改成撈回後在記憶體排序，比照 questions/route.ts 的作法。
@@ -72,7 +81,47 @@ export async function GET(request: Request) {
         )
         .slice(0, 500);
     }
-    return NextResponse.json(cards);
+
+    let filtered = cards;
+    if (search) {
+      filtered = filtered.filter((card) => {
+        const data = card as {
+          topic?: string;
+          topicEn?: string;
+          definition?: string;
+          keywordDisplay?: string[];
+        };
+        const haystack = [
+          data.topic ?? "",
+          data.topicEn ?? "",
+          data.definition ?? "",
+          ...(Array.isArray(data.keywordDisplay) ? data.keywordDisplay : []),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(search);
+      });
+    }
+
+    if (!paginate) {
+      return NextResponse.json(filtered);
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
+      const ah = (a as { heat?: number }).heat ?? 0;
+      const bh = (b as { heat?: number }).heat ?? 0;
+      if (bh !== ah) return bh - ah;
+      const at = String((a as { topic?: string }).topic ?? "");
+      const bt = String((b as { topic?: string }).topic ?? "");
+      return at.localeCompare(bt, "zh-Hant");
+    });
+
+    const total = sorted.length;
+    const stubTotal = sorted.filter(
+      (card) => (card as { isStub?: boolean }).isStub !== false
+    ).length;
+    const items = sorted.slice(pageOffset, pageOffset + pageLimit);
+    return NextResponse.json({ items, total, stubTotal });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch skeleton cards";

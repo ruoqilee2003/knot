@@ -55,6 +55,11 @@ export default function SkeletonCardEditorPage() {
   const [blocks, setBlocks] = useState<SkeletonBlock[]>([]);
   const [conclusion, setConclusion] = useState("");
   const [saveAsStub, setSaveAsStub] = useState(true);
+  const [simpleExplanation, setSimpleExplanation] = useState<string | null>(
+    null
+  );
+  const [explaining, setExplaining] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
 
   const [relatedCardIds, setRelatedCardIds] = useState<Set<string>>(new Set());
   const [allCards, setAllCards] = useState<RelatedCard[]>([]);
@@ -103,6 +108,9 @@ export default function SkeletonCardEditorPage() {
       setBlocks(Array.isArray(data.blocks) ? (data.blocks as SkeletonBlock[]) : []);
       setConclusion(String(data.conclusion ?? ""));
       setSaveAsStub(data.isStub !== false);
+      setSimpleExplanation(
+        typeof data.simpleExplanation === "string" ? data.simpleExplanation : null
+      );
       setRelatedCardIds(
         new Set(
           Array.isArray(data.relatedCardIds)
@@ -360,6 +368,27 @@ export default function SkeletonCardEditorPage() {
     el.style.height = `${el.scrollHeight}px`;
   }, []);
 
+  const handleExplain = useCallback(async () => {
+    setExplaining(true);
+    setExplainError(null);
+    try {
+      const response = await fetch(`/api/skeleton-cards/${id}/simplify`, {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { simpleExplanation?: string; error?: string }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error || "生成白話說明失敗");
+      }
+      setSimpleExplanation(payload?.simpleExplanation ?? "");
+    } catch (e) {
+      setExplainError(e instanceof Error ? e.message : "生成白話說明失敗");
+    } finally {
+      setExplaining(false);
+    }
+  }, [id]);
+
   const willBeComplete = useMemo(
     () => isCardComplete({ definition, conclusion, blocks }),
     [definition, conclusion, blocks]
@@ -441,7 +470,11 @@ export default function SkeletonCardEditorPage() {
     <div className="mx-auto w-full max-w-3xl px-4 py-8 md:px-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <Link href="/skeleton-cards" className="text-xs text-stone-500 underline">
+          <Link
+            href="/skeleton-cards"
+            scroll={false}
+            className="text-xs text-stone-500 underline"
+          >
             ← 回骨架卡列表
           </Link>
           <h1 className="mt-1 font-serif text-2xl font-semibold text-stone-900">
@@ -566,6 +599,32 @@ export default function SkeletonCardEditorPage() {
             <p className="mt-2 w-full whitespace-pre-wrap text-left text-sm leading-relaxed text-stone-900">
               {conclusion || "（尚未填寫）"}
             </p>
+          </div>
+
+          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-sky-800">
+                真的不懂？白話說明
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleExplain()}
+                disabled={explaining}
+                className="rounded-lg border border-sky-300 bg-white px-3 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+              >
+                {explaining
+                  ? "生成中…"
+                  : simpleExplanation
+                    ? "重新生成"
+                    : "生成白話說明"}
+              </button>
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-left text-sm leading-relaxed text-sky-900">
+              {simpleExplanation || "（尚未生成，按右上角按鈕生成）"}
+            </p>
+            {explainError && (
+              <p className="mt-2 text-xs text-red-600">{explainError}</p>
+            )}
           </div>
 
           {prompts.length > 0 && (

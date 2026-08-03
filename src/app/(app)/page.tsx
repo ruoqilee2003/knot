@@ -65,6 +65,12 @@ function HallPageContent() {
   const [archaeologyFilter, setArchaeologyFilter] = useState<"all" | "archaeology">(
     () => savedHallStateRef.current?.archaeologyFilter ?? "all"
   );
+  const [searchText, setSearchText] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const offsetRef = useRef(0);
+  const PAGE_SIZE = 10;
   const restoredScrollRef = useRef(false);
 
   // 從其他頁（例如統計儀表板的關鍵字）帶著 ?keyword= 連過來時同步篩選條件
@@ -105,70 +111,107 @@ function HallPageContent() {
     }
   }, []);
 
-  const load = useCallback(async () => {
-    loadAbortRef.current?.abort();
-    const controller = new AbortController();
-    loadAbortRef.current = controller;
-    setLoadError(null);
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (subjectFilter !== "all") {
-        params.set("subject", subjectFilter);
+  const parseRows = (data: Array<Record<string, unknown>>): Row[] =>
+    data.map((d) => ({
+      id: String(d.id ?? ""),
+      subject: String(d.subject ?? ""),
+      year: Number(d.year ?? 0),
+      score: Number(d.score ?? 100),
+      questionText: String(d.questionText ?? d.title ?? ""),
+      imageUrl: d.imageUrl ? String(d.imageUrl) : null,
+      isArchaeology: d.isArchaeology === true,
+      latestAttemptStatus:
+        typeof d.latestAttemptStatus === "string"
+          ? (d.latestAttemptStatus as Row["latestAttemptStatus"])
+          : null,
+      latestKeywords: Array.isArray(d.latestKeywords)
+        ? d.latestKeywords
+            .map((item) => String(item).trim().toLowerCase())
+            .filter(Boolean)
+        : [],
+      latestKeywordDisplay: Array.isArray(d.latestKeywordDisplay)
+        ? d.latestKeywordDisplay
+            .map((item) => String(item).trim())
+            .filter(Boolean)
+        : [],
+      createdAt: d.createdAt ?? null,
+    }));
+
+  const load = useCallback(
+    async (options?: { append?: boolean }) => {
+      const append = options?.append ?? false;
+      loadAbortRef.current?.abort();
+      const controller = new AbortController();
+      loadAbortRef.current = controller;
+      setLoadError(null);
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
       }
-      if (keywordFilter.trim()) {
-        params.set("keyword", keywordFilter.trim());
+      const nextOffset = append ? offsetRef.current : 0;
+      try {
+        const params = new URLSearchParams();
+        if (subjectFilter !== "all") {
+          params.set("subject", subjectFilter);
+        }
+        if (keywordFilter.trim()) {
+          params.set("keyword", keywordFilter.trim());
+        }
+        if (archaeologyFilter === "archaeology") {
+          params.set("archaeology", "1");
+        }
+        if (debouncedSearch.trim()) {
+          params.set("search", debouncedSearch.trim());
+        }
+        params.set("sort", sortMode);
+        params.set("limit", String(PAGE_SIZE));
+        params.set("offset", String(nextOffset));
+        const response = await fetch(`/api/questions?${params.toString()}`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(payload?.error || "無法讀取題庫");
+        }
+        const payload = (await response.json()) as {
+          items: Array<Record<string, unknown>>;
+          total: number;
+        };
+        const next = parseRows(payload.items);
+        setRows((prev) => (append ? [...prev, ...next] : next));
+        setTotal(payload.total);
+        offsetRef.current = nextOffset + next.length;
+        if (!append) {
+          setSelectedIds([]);
+          setSelectingForExport(false);
+        }
+        setLoading(false);
+        setLoadingMore(false);
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setLoadError(e instanceof Error ? e.message : "無法讀取題庫");
+        if (!append) setRows([]);
+        setLoading(false);
+        setLoadingMore(false);
       }
-      if (archaeologyFilter === "archaeology") {
-        params.set("archaeology", "1");
-      }
-      const query = params.size > 0 ? `?${params.toString()}` : "";
-      const response = await fetch(`/api/questions${query}`, {
-        method: "GET",
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
-        throw new Error(payload?.error || "無法讀取題庫");
-      }
-      const data = (await response.json()) as Array<Record<string, unknown>>;
-      const next: Row[] = data.map((d) => ({
-        id: String(d.id ?? ""),
-        subject: String(d.subject ?? ""),
-        year: Number(d.year ?? 0),
-        score: Number(d.score ?? 100),
-        questionText: String(d.questionText ?? d.title ?? ""),
-        imageUrl: d.imageUrl ? String(d.imageUrl) : null,
-        isArchaeology: d.isArchaeology === true,
-        latestAttemptStatus:
-          typeof d.latestAttemptStatus === "string"
-            ? (d.latestAttemptStatus as Row["latestAttemptStatus"])
-            : null,
-        latestKeywords: Array.isArray(d.latestKeywords)
-          ? d.latestKeywords
-              .map((item) => String(item).trim().toLowerCase())
-              .filter(Boolean)
-          : [],
-        latestKeywordDisplay: Array.isArray(d.latestKeywordDisplay)
-          ? d.latestKeywordDisplay
-              .map((item) => String(item).trim())
-              .filter(Boolean)
-          : [],
-        createdAt: d.createdAt ?? null,
-      }));
-      setRows(next);
-      setSelectedIds([]);
-      setSelectingForExport(false);
-      setLoading(false);
-    } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") return;
-      setLoadError(e instanceof Error ? e.message : "無法讀取題庫");
-      setRows([]);
-      setLoading(false);
-    }
-  }, [subjectFilter, keywordFilter, archaeologyFilter]);
+    },
+    [subjectFilter, keywordFilter, archaeologyFilter, debouncedSearch, sortMode]
+  );
+
+  const loadMore = useCallback(() => {
+    void load({ append: true });
+  }, [load]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchText);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchText]);
 
   const runArchiveAction = useCallback(
     async (action: "archiveAll" | "restoreAll" | "deleteAllArchived") => {
@@ -229,21 +272,8 @@ function HallPageContent() {
 
   const subjects = PRESET_SUBJECTS;
 
-  const visibleRows = useMemo(() => {
-    const isFinished = (row: Row) =>
-      row.latestAttemptStatus === "completed" ||
-      row.latestAttemptStatus === "analyzed" ||
-      row.latestAttemptStatus === "flashcards_ready";
-    return [...rows].sort((a, b) => {
-      if (sortMode === "unfinished-first") {
-        const finishedDiff = Number(isFinished(a)) - Number(isFinished(b));
-        if (finishedDiff !== 0) return finishedDiff;
-      }
-      const left = Number.isFinite(a.year) ? a.year : 0;
-      const right = Number.isFinite(b.year) ? b.year : 0;
-      return sortMode === "year-asc" ? left - right : right - left;
-    });
-  }, [rows, sortMode]);
+  // 排序改由 /api/questions 依 sortMode 處理，這裡直接使用伺服器回傳順序
+  const visibleRows = rows;
 
   useEffect(() => {
     if (loading || restoredScrollRef.current) return;
@@ -283,6 +313,8 @@ function HallPageContent() {
           throw new Error(payload?.error || "刪除題目失敗");
         }
         setRows((prev) => prev.filter((row) => row.id !== id));
+        setTotal((prev) => Math.max(0, prev - 1));
+        offsetRef.current = Math.max(0, offsetRef.current - 1);
         setDeleteTargetId(null);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : "刪除題目失敗");
@@ -533,6 +565,17 @@ function HallPageContent() {
         </label>
 
         <label className="text-sm text-stone-700">
+          搜尋內容
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="搜尋題目文字"
+            className="ml-2 w-40 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
+          />
+        </label>
+
+        <label className="text-sm text-stone-700">
           關鍵字
           <input
             type="text"
@@ -762,6 +805,24 @@ function HallPageContent() {
         <p className="mt-16 text-center text-sm text-stone-500">
           目前篩選條件下沒有題目。
         </p>
+      )}
+
+      {!loading && !loadError && visibleRows.length > 0 && (
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <p className="text-xs text-stone-500">
+            已顯示 {visibleRows.length} / {total} 筆
+          </p>
+          {visibleRows.length < total && (
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              {loadingMore ? "載入中…" : "載入更多"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { sortForReview, type SkeletonBlock } from "@/lib/skeleton-cards";
+import type { SkeletonBlock } from "@/lib/skeleton-cards";
+import { shuffle } from "@/lib/shuffle";
 import { PRESET_SUBJECTS, normalizeSubject, subjectsMatch } from "@/lib/subjects";
 
 type Card = {
@@ -18,6 +19,7 @@ type Card = {
   blocks: SkeletonBlock[];
   conclusion: string;
   confidence: number;
+  simpleExplanation?: string;
 };
 
 type Round = "R1" | "R2" | "R3";
@@ -82,6 +84,10 @@ export default function SkeletonReviewPage() {
             blocks: Array.isArray(x.blocks) ? (x.blocks as SkeletonBlock[]) : [],
             conclusion: String(x.conclusion ?? ""),
             confidence: typeof x.confidence === "number" ? x.confidence : 0,
+            simpleExplanation:
+              typeof x.simpleExplanation === "string"
+                ? x.simpleExplanation
+                : undefined,
           }))
           .filter((card) => card.blocks.length > 0);
         setCards(list);
@@ -159,7 +165,7 @@ export default function SkeletonReviewPage() {
 
   const startReview = useCallback(() => {
     if (matchedCards.length === 0) return;
-    setDeck(sortForReview(matchedCards));
+    setDeck(shuffle(matchedCards));
     setIndex(0);
     setFlipped(false);
     setSessionStats({ instant: 0, recalled: 0, blank: 0 });
@@ -174,6 +180,40 @@ export default function SkeletonReviewPage() {
   }, []);
 
   const current = phase === "reviewing" ? (deck[index] ?? null) : null;
+
+  const [explaining, setExplaining] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExplainError(null);
+  }, [index]);
+
+  const handleExplain = useCallback(async () => {
+    const card = deck[index];
+    if (!card) return;
+    setExplaining(true);
+    setExplainError(null);
+    try {
+      const res = await fetch(`/api/skeleton-cards/${card.id}/simplify`, {
+        method: "POST",
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | { simpleExplanation?: string; error?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(payload?.error || "生成白話說明失敗");
+      }
+      const explanation = payload?.simpleExplanation ?? "";
+      const patch = (item: Card) =>
+        item.id === card.id ? { ...item, simpleExplanation: explanation } : item;
+      setCards((prev) => prev.map(patch));
+      setDeck((prev) => prev.map(patch));
+    } catch (e) {
+      setExplainError(e instanceof Error ? e.message : "生成白話說明失敗");
+    } finally {
+      setExplaining(false);
+    }
+  }, [deck, index]);
 
   const advance = useCallback(() => {
     setFlipped(false);
@@ -542,6 +582,39 @@ export default function SkeletonReviewPage() {
               </div>
             </div>
           </button>
+
+          <div className="mt-6 w-full max-w-2xl">
+            {current.simpleExplanation ? (
+              <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-4 text-sm leading-relaxed text-sky-900">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-sky-600">
+                    真的不懂？白話說明
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleExplain}
+                    disabled={explaining}
+                    className="text-xs text-sky-600 underline hover:text-sky-800 disabled:opacity-40"
+                  >
+                    {explaining ? "生成中…" : "重新生成"}
+                  </button>
+                </div>
+                <p className="mt-2">{current.simpleExplanation}</p>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleExplain}
+                disabled={explaining}
+                className="w-full rounded-xl border border-dashed border-sky-300 bg-sky-50/50 px-4 py-3 text-sm font-medium text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {explaining ? "生成中…" : "🤔 真的不懂，給我大白話說明"}
+              </button>
+            )}
+            {explainError && (
+              <p className="mt-2 text-xs text-red-600">{explainError}</p>
+            )}
+          </div>
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
             <button

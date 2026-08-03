@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
-import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
+import { PRESET_SUBJECTS } from "@/lib/subjects";
 
 type Card = {
   id: string;
@@ -53,6 +53,12 @@ export default function FlashcardsPage() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState("all");
+  const [searchText, setSearchText] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const offsetRef = useRef(0);
+  const PAGE_SIZE = 10;
   const [openedIds, setOpenedIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftFront, setDraftFront] = useState("");
@@ -60,47 +66,80 @@ export default function FlashcardsPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [selectingForExport, setSelectingForExport] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [exportingAll, setExportingAll] = useState(false);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const response = await fetch("/api/flashcards", { method: "GET" });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
-        throw new Error(payload?.error || "讀取字卡失敗");
+  const parseCards = (data: Array<Record<string, unknown>>): Card[] =>
+    data.map((x) => ({
+      id: String(x.id ?? ""),
+      front: String(x.front ?? ""),
+      back: String(x.back ?? ""),
+      subject: String(x.subject ?? ""),
+      questionId: x.questionId ? String(x.questionId) : null,
+      createdAt: x.createdAt ?? null,
+      rememberCount: typeof x.rememberCount === "number" ? x.rememberCount : 0,
+      forgetCount: typeof x.forgetCount === "number" ? x.forgetCount : 0,
+      important: x.important === true,
+    }));
+
+  const load = useCallback(
+    async (options?: { append?: boolean }) => {
+      const append = options?.append ?? false;
+      setError(null);
+      if (append) setLoadingMore(true);
+      const nextOffset = append ? offsetRef.current : 0;
+      try {
+        const params = new URLSearchParams();
+        if (subjectFilter !== "all") params.set("subject", subjectFilter);
+        if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+        params.set("limit", String(PAGE_SIZE));
+        params.set("offset", String(nextOffset));
+        const response = await fetch(`/api/flashcards?${params.toString()}`, {
+          method: "GET",
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(payload?.error || "讀取字卡失敗");
+        }
+        const payload = (await response.json()) as {
+          items: Array<Record<string, unknown>>;
+          total: number;
+        };
+        const list = parseCards(payload.items);
+        setCards((prev) => (append ? [...prev, ...list] : list));
+        setTotal(payload.total);
+        offsetRef.current = nextOffset + list.length;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "讀取字卡失敗");
+        if (!append) setCards([]);
+      } finally {
+        setLoadingMore(false);
       }
-      const data = (await response.json()) as Array<Record<string, unknown>>;
-      const list: Card[] = data.map((x) => ({
-        id: String(x.id ?? ""),
-        front: String(x.front ?? ""),
-        back: String(x.back ?? ""),
-        subject: String(x.subject ?? ""),
-        questionId: x.questionId ? String(x.questionId) : null,
-        createdAt: x.createdAt ?? null,
-        rememberCount: typeof x.rememberCount === "number" ? x.rememberCount : 0,
-        forgetCount: typeof x.forgetCount === "number" ? x.forgetCount : 0,
-        important: x.important === true,
-      }));
-      setCards(list);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "讀取字卡失敗");
-      setCards([]);
-    }
-  }, []);
+    },
+    [subjectFilter, debouncedSearch]
+  );
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchText);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+
+  const loadMore = useCallback(() => {
+    void load({ append: true });
+  }, [load]);
+
   const subjects = PRESET_SUBJECTS;
 
-  const visibleCards = useMemo(() => {
-    if (subjectFilter === "all") return cards;
-    return cards.filter((card) => subjectsMatch(card.subject, subjectFilter));
-  }, [cards, subjectFilter]);
+  // 篩選改由 /api/flashcards 依 subject/search 處理，這裡直接使用已載入的頁面資料
+  const visibleCards = cards;
 
   const deleteCard = useCallback(async (id: string) => {
     setDeleting(true);
@@ -116,6 +155,8 @@ export default function FlashcardsPage() {
       }
       setCards((prev) => prev.filter((card) => card.id !== id));
       setSelectedIds((prev) => prev.filter((item) => item !== id));
+      setTotal((prev) => Math.max(0, prev - 1));
+      offsetRef.current = Math.max(0, offsetRef.current - 1);
       setDeleteTargetId(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "刪除字卡失敗");
@@ -208,15 +249,34 @@ export default function FlashcardsPage() {
     setSelectedIds([]);
   }, []);
 
-  const exportMarkdown = useCallback(() => {
+  const exportMarkdown = useCallback(async () => {
     if (selectingForExport && selectedIds.length === 0) {
       setError("請先選取要匯出的字卡");
       return;
     }
-    const exportCards =
-      selectingForExport && selectedIds.length > 0
-        ? visibleCards.filter((card) => selectedIds.includes(card.id))
-        : visibleCards;
+    let exportCards: Card[];
+    if (selectingForExport && selectedIds.length > 0) {
+      exportCards = visibleCards.filter((card) => selectedIds.includes(card.id));
+    } else {
+      // 匯出目前列表時，抓取符合目前篩選條件的「全部」字卡，而非僅已載入的分頁
+      setExportingAll(true);
+      try {
+        const params = new URLSearchParams();
+        if (subjectFilter !== "all") params.set("subject", subjectFilter);
+        if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+        const response = await fetch(`/api/flashcards?${params.toString()}`);
+        const data = (await response.json().catch(() => [])) as Array<
+          Record<string, unknown>
+        >;
+        if (!response.ok) throw new Error("讀取字卡失敗");
+        exportCards = parseCards(data);
+      } catch {
+        setError("匯出失敗，請稍後再試");
+        setExportingAll(false);
+        return;
+      }
+      setExportingAll(false);
+    }
     if (exportCards.length === 0) {
       setError("目前沒有可匯出的字卡");
       return;
@@ -230,7 +290,7 @@ export default function FlashcardsPage() {
       setSelectingForExport(false);
       setSelectedIds([]);
     }
-  }, [visibleCards, subjectFilter, selectingForExport, selectedIds]);
+  }, [visibleCards, subjectFilter, debouncedSearch, selectingForExport, selectedIds]);
 
   return (
     <div className="w-full px-4 py-8 md:px-6">
@@ -257,6 +317,17 @@ export default function FlashcardsPage() {
           </select>
         </label>
 
+        <label className="text-sm text-stone-700">
+          搜尋內容
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="搜尋字卡正反面"
+            className="ml-2 w-40 rounded-lg border border-stone-300 bg-white px-2 py-1 text-sm"
+          />
+        </label>
+
         {!selectingForExport ? (
           <>
             <button
@@ -269,11 +340,11 @@ export default function FlashcardsPage() {
             </button>
             <button
               type="button"
-              onClick={exportMarkdown}
-              disabled={visibleCards.length === 0}
+              onClick={() => void exportMarkdown()}
+              disabled={visibleCards.length === 0 || exportingAll}
               className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
             >
-              匯出目前列表
+              {exportingAll ? "匯出中…" : "匯出目前列表"}
             </button>
           </>
         ) : (
@@ -289,7 +360,7 @@ export default function FlashcardsPage() {
             </label>
             <button
               type="button"
-              onClick={exportMarkdown}
+              onClick={() => void exportMarkdown()}
               disabled={selectedIds.length === 0}
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${
                 selectedIds.length > 0
@@ -482,6 +553,24 @@ export default function FlashcardsPage() {
         <p className="mt-16 text-center text-sm text-stone-500">
           目前篩選條件下沒有字卡。
         </p>
+      )}
+
+      {!error && visibleCards.length > 0 && (
+        <div className="mt-6 flex flex-col items-center gap-2">
+          <p className="text-xs text-stone-500">
+            已顯示 {visibleCards.length} / {total} 筆
+          </p>
+          {visibleCards.length < total && (
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              {loadingMore ? "載入中…" : "載入更多"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

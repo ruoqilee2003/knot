@@ -11,6 +11,7 @@
     "migrate:attempts:dry": "node scripts/migrate-attempts.mjs --dry-run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@google/generative-ai": "^0.24.1",
     "firebase": "^12.13.0",
     "firebase-admin": "^13.9.0",

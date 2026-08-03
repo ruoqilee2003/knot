@@ -15,8 +15,20 @@ type FlashcardBody = {
   }>;
 };
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const subject = searchParams.get("subject")?.trim() ?? "";
+    const search = searchParams.get("search")?.trim().toLowerCase() ?? "";
+    const limitParam = searchParams.get("limit");
+    const offsetParam = searchParams.get("offset");
+    const paginate = limitParam !== null;
+    const pageLimit = Math.min(
+      100,
+      Math.max(1, Number.parseInt(limitParam ?? "10", 10) || 10)
+    );
+    const pageOffset = Math.max(0, Number.parseInt(offsetParam ?? "0", 10) || 0);
+
     const snapshot = await adminDb
       .collection("flashcards")
       .orderBy("createdAt", "desc")
@@ -69,7 +81,29 @@ export async function GET() {
           typeof card.questionId === "string" ? card.questionId : ""
         ) ?? [],
     }));
-    return NextResponse.json(enriched);
+
+    let filtered = enriched;
+    if (subject) {
+      filtered = filtered.filter(
+        (card) => (card as { subject?: string }).subject === subject
+      );
+    }
+    if (search) {
+      filtered = filtered.filter((card) => {
+        const data = card as { front?: string; back?: string };
+        const front = String(data.front ?? "").toLowerCase();
+        const back = String(data.back ?? "").toLowerCase();
+        return front.includes(search) || back.includes(search);
+      });
+    }
+
+    if (!paginate) {
+      return NextResponse.json(filtered);
+    }
+
+    const total = filtered.length;
+    const items = filtered.slice(pageOffset, pageOffset + pageLimit);
+    return NextResponse.json({ items, total });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch flashcards";
