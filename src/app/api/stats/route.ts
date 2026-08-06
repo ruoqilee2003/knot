@@ -29,29 +29,39 @@ function toMillis(value: unknown): number {
 
 export async function GET() {
   try {
-    const [questionsSnap, attemptsSnap, flashcardsSnap, skeletonCardsSnap] =
-      await Promise.all([
-        adminDb
-          .collection("questions")
-          .select("subject", "latestAttemptStatus", "latestDraft", "archived")
-          .limit(2000)
-          .get(),
-        adminDb
-          .collection("attempts")
-          .select("subject", "status", "updatedAt")
-          .limit(2000)
-          .get(),
-        adminDb
-          .collection("flashcards")
-          .select("subject", "questionId", "rememberCount", "forgetCount")
-          .limit(5000)
-          .get(),
-        adminDb
-          .collection("skeletonCards")
-          .select("subject", "updatedAt", "confidence", "reviewCount")
-          .limit(2000)
-          .get(),
-      ]);
+    const [
+      questionsSnap,
+      attemptsSnap,
+      flashcardsSnap,
+      skeletonCardsSnap,
+      quizQuestionsSnap,
+    ] = await Promise.all([
+      adminDb
+        .collection("questions")
+        .select("subject", "latestAttemptStatus", "latestDraft", "archived")
+        .limit(2000)
+        .get(),
+      adminDb
+        .collection("attempts")
+        .select("subject", "status", "updatedAt")
+        .limit(2000)
+        .get(),
+      adminDb
+        .collection("flashcards")
+        .select("subject", "questionId", "rememberCount", "forgetCount")
+        .limit(5000)
+        .get(),
+      adminDb
+        .collection("skeletonCards")
+        .select("subject", "updatedAt", "confidence", "reviewCount")
+        .limit(2000)
+        .get(),
+      adminDb
+        .collection("quizQuestions")
+        .select("correctCount", "wrongCount")
+        .limit(5000)
+        .get(),
+    ]);
 
     const subjectMap = new Map<string, SubjectStat>();
     const ensureSubject = (subject: string): SubjectStat => {
@@ -80,6 +90,10 @@ export async function GET() {
     let totalSkeletonCards = 0;
     let totalFlashcardReviews = 0;
     let totalSkeletonReviews = 0;
+    let totalQuizQuestions = 0;
+    let totalQuizReviews = 0;
+    let totalQuizCorrect = 0;
+    let totalQuizWrong = 0;
 
     for (const doc of questionsSnap.docs) {
       const data = doc.data() as {
@@ -131,6 +145,20 @@ export async function GET() {
       const forgetCount =
         typeof data.forgetCount === "number" ? data.forgetCount : 0;
       totalFlashcardReviews += rememberCount + forgetCount;
+    }
+
+    for (const doc of quizQuestionsSnap.docs) {
+      const data = doc.data() as {
+        correctCount?: number;
+        wrongCount?: number;
+      };
+      totalQuizQuestions += 1;
+      const correctCount =
+        typeof data.correctCount === "number" ? data.correctCount : 0;
+      const wrongCount = typeof data.wrongCount === "number" ? data.wrongCount : 0;
+      totalQuizCorrect += correctCount;
+      totalQuizWrong += wrongCount;
+      totalQuizReviews += correctCount + wrongCount;
     }
 
     // 最近活動（依日期統計作答 + 骨架卡）
@@ -209,6 +237,10 @@ export async function GET() {
         skeletonCards: totalSkeletonCards,
         flashcardReviews: totalFlashcardReviews,
         skeletonReviews: totalSkeletonReviews,
+        quizQuestions: totalQuizQuestions,
+        quizReviews: totalQuizReviews,
+        quizCorrect: totalQuizCorrect,
+        quizWrong: totalQuizWrong,
       },
       subjects,
       topActivity,

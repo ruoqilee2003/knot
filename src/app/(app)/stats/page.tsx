@@ -12,6 +12,10 @@ type Stats = {
     skeletonCards: number;
     flashcardReviews: number;
     skeletonReviews: number;
+    quizQuestions: number;
+    quizReviews: number;
+    quizCorrect: number;
+    quizWrong: number;
   };
   subjects: Array<{
     subject: string;
@@ -115,6 +119,16 @@ export default function StatsPage() {
             <SummaryCard
               label="骨架複習次數"
               value={stats.totals.skeletonReviews}
+            />
+            <SummaryCard label="選擇題總數" value={stats.totals.quizQuestions} />
+            <SummaryCard
+              label="選擇題複習次數"
+              value={stats.totals.quizReviews}
+              hint={
+                stats.totals.quizReviews > 0
+                  ? `答對率 ${percent(stats.totals.quizCorrect, stats.totals.quizReviews)}%`
+                  : undefined
+              }
             />
           </div>
 

@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# one-off scripts and notes
+scripts/generate-quiz-questions.mjs
+scripts/generate-common-explanations.mjs
+scripts/import-os-mindmap.mjs
+scripts/import-common-exam-archive.mjs
+scripts/data/*.md
+dev-err.log
+dev-out.log

@@ -32,7 +32,7 @@ export async function GET(request: Request) {
     const snapshot = await adminDb
       .collection("flashcards")
       .orderBy("createdAt", "desc")
-      .limit(200)
+      .limit(5000)
       .get();
     const cards = snapshot.docs.map((doc) => ({
       id: doc.id,

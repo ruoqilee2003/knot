@@ -26,6 +26,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 | `/skeleton-cards` | 骨架卡列表：依科目分組、顯示卡樁/完整徽章與待補完進度；新增表單科目為固定選單（資通網路/資通安全/資料庫應用/作業系統），關鍵字輸入會從 `/api/keywords` 帶出既有關鍵字建議；同科關鍵字有交集的題目會自動勾選連結（不限考古標記；考古題也可手動勾選） |
 | `/skeleton-cards/[id]` | 骨架卡編輯：定義（無字數限制）→ 可複數組的分類架構＋逐點展開（`points.length` 不可超過 `count`）→ 結論；同科且關鍵字有交集的題目會自動連結並把題幹帶入問法（不限「考古」標記；清單另含標記為考古的題目可供手動勾選），也可手動調整；可連結其他骨架卡（`relatedCardIds`，雙向同步）；儲存時可手動選擇要存成「卡樁」或「骨架卡」，不再單純依內容完整度自動判斷 |
 | `/skeleton-review` | 骨架卡回想模式複習：依科目/關鍵字/複習輪次（R1 全部／R2 信心<2／R3 信心=0）篩選，牌組每次開始複習隨機洗牌，正面只給問法與分類鉤子，翻面才顯示完整內容，三段自評（秒答/想得出來/空白）寫回 `confidence`。鍵盤：空白翻面、1/2/3 自評、←→ 切換 |
+| `/skeleton-mindmap` | 骨架心智圖：以科目為中心的手動心智圖畫布（每科目一份，不會自動把該科所有骨架卡拉出來）；「+ 加入骨架卡」勾選要放上畫布的卡（card 節點）、「+ 文字節點」加自由文字節點、「連接模式」依序點兩個節點手動拉線（線可加選填標籤）；節點可拖曳定位、雙擊文字節點可改內容，選取節點/連線後可用 Delete 或 hover 出現的紅色 × 刪除；兩個 card 節點之間的連線（紫色）會呼叫 `skeleton-cards/[id]` PUT 同步寫回雙方的 `relatedCardIds`，刪除該連線也會同步取消關聯；畫布狀態（節點座標、連線）800ms debounce 自動存到 `mindMaps/{subject}` |
 | `/keypoints` | 速讀重點：彙整所有已批改題目的 examKeyPoints，依科目篩選、往下滑速讀 |
 | `/notes`、`/keyword-notes` | 解答批改筆記、重點筆記列表 |
 | `/stats` | 統計儀表板：總覽數字、各科進度條、近八週活動、常用關鍵字 |
@@ -42,6 +43,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - `keypoints`：GET 彙整已批改 attempts 的 `analysis.examKeyPoints`，批次補題目文字（getAll，勿改成 N+1）
 - `skeleton-cards`：GET 列表（`?subject=` 篩選；帶 `?search=`（比對 topic/topicEn/definition/keywordDisplay）／`?limit=`／`?offset=` 時依熱度排序後回傳 `{ items, total, stubTotal }`，不帶則回傳純陣列）/ POST 建卡（`keywords` 為主索引，至少 1 個，同科目關鍵字有交集回 409 + `duplicates`，帶 `allowDuplicate: true` 可強制建立；會依關鍵字自動連結同科題目並併入 `archaeologyQuestionIds`——不要求 `isArchaeology`，帶明確 ID 且未帶 `prompts` 時自動用題幹前 40 字產生問法草稿）；`isStub` 預設由 `src/lib/skeleton-cards.ts` 的 `isCardComplete()` 依內容完整度自動判斷（建立時無法覆寫，只有編輯 PUT 可以）
 - `skeleton-cards/[id]`：GET 單卡 / DELETE 刪除 / PUT 三種模式：`{confidence:0|1|2}` 快速寫回複習信心值、`{heatDelta:number}`（或舊版 `{heatIncrement:true}`）調整熱度 ±1（夾在 0-3）、其餘欄位為內容編輯（`definition` 無字數限制；帶 `isStub:boolean` 可手動覆寫要存成卡樁還是骨架卡，不帶則沿用 `isCardComplete()` 自動判斷；帶 `keywords` 或 `archaeologyQuestionIds` 時會把同科關鍵字相符的題目併入連結；帶 `relatedCardIds` 會雙向同步——用 batch 把自己的 id 加進/移出對方文件的 `relatedCardIds`）
+- `mindmaps/[subject]`：GET 回傳 `{ subject, nodes, edges }`（該科目沒有畫布文件時回空陣列，非 404）；PUT 整份覆寫（`src/lib/mindmap-canvas.ts` 的 `sanitizeCanvasNodes`/`sanitizeCanvasEdges` 過濾非法節點/連線，例如指到不存在節點的邊）；沒有 DELETE，清空畫布是 client 端 PUT 空陣列
 - `study-notes`、`personal-notes`、`keywords`、`export/questions`、`stats`、`auth/login`、`auth/logout`
 - `archive`：GET 回傳 `{ activeCount, archivedCount }`；POST `{ action: "archiveAll" | "restoreAll" }` 批次封存/還原全部題目（資料保留，僅從各列表隱藏）；POST `{ action: "deleteAllArchived" }` 永久刪除所有封存題目及其 attempts/flashcards/studyNotes/personalNotes（資料真的會消失，練習大廳有二次確認對話框）。CLI：`node scripts/archive-all-questions.mjs [--dry-run] [--restore]`
 
@@ -52,6 +54,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - `flashcards`：字卡（含 `rememberCount`/`forgetCount`/`lastReviewedAt` 複習統計、`important` 考古題字卡標記，舊卡可能沒有這些欄位）
 - `studyNotes`（解答批改）、`personalNotes`（重點筆記）、`keywords`（ID = 正規化關鍵字，含 usageCount）
 - `skeletonCards`：骨架卡（定義→分類架構→逐點展開→結論四層，見 `src/lib/skeleton-cards.ts`），`topic`/`topicEn` 為主題名稱的中/英文欄位（英文選填）、`keywords`/`keywordDisplay` 為主索引、`archaeologyQuestionIds` 連結考古題作佐證、`relatedCardIds` 連結其他骨架卡（雙向，由 API 維護對稱性）、`heat`（0-3 手動加減）、`confidence`（0/1/2 複習信心，複習輪次 R1/R2/R3 依此篩選）、`isStub` 預設自動判斷但編輯時可手動覆寫。科目固定為 `src/lib/subjects.ts` 的 `PRESET_SUBJECTS`（資通網路/資通安全/資料庫應用/作業系統；舊別名「資通庫應用」會正規化）
+- `mindMaps`：骨架心智圖畫布，文件 ID = 科目名稱（一科一份）。`nodes: MindMapCanvasNode[]`（`kind: "card"` 帶 `cardId` 指到 skeletonCards，或 `kind: "text"` 帶自由 `label`；都有 `x`/`y` 座標）、`edges: MindMapCanvasEdge[]`（`fromId`/`toId` 是節點 id 或固定值 `"__root__"` 代表科目中心，可選 `label`）。型別與 sanitize 邏輯見 `src/lib/mindmap-canvas.ts`
 
 ## 認證
 
