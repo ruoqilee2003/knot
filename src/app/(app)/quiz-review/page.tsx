@@ -5,6 +5,19 @@ import Link from "next/link";
 import { PRESET_SUBJECTS, subjectsMatch } from "@/lib/subjects";
 import { shuffle } from "@/lib/shuffle";
 
+const STORAGE_KEY = "knot:quiz-review-session";
+
+type StoredSession = {
+  phase: Phase;
+  deckIds: string[];
+  index: number;
+  sessionStats: { correct: number; wrong: number; skipped: number };
+  wrongReviewIds: string[];
+  subjectFilter: string;
+  selectedKeywords: string[];
+  mode: Mode;
+};
+
 type SourceCard = {
   id: string;
   front: string;
@@ -63,6 +76,7 @@ export default function QuizReviewPage() {
     skipped: 0,
   });
   const [wrongReview, setWrongReview] = useState<QuizQuestion[]>([]);
+  const [restored, setRestored] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -141,6 +155,76 @@ export default function QuizReviewPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // 還原上次未完成的複習進度（避免不小心切頁面就要重新開始）
+  useEffect(() => {
+    if (loading || restored) return;
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as StoredSession;
+        if (
+          parsed.phase !== "setup" &&
+          Array.isArray(parsed.deckIds) &&
+          parsed.deckIds.length > 0
+        ) {
+          const map = new Map(questions.map((q) => [q.id, q]));
+          const restoredDeck = parsed.deckIds
+            .map((id) => map.get(id))
+            .filter((q): q is QuizQuestion => Boolean(q));
+          if (restoredDeck.length === parsed.deckIds.length) {
+            setDeck(restoredDeck);
+            setIndex(Math.min(parsed.index, restoredDeck.length - 1));
+            setSessionStats(parsed.sessionStats);
+            setWrongReview(
+              parsed.wrongReviewIds
+                .map((id) => map.get(id))
+                .filter((q): q is QuizQuestion => Boolean(q))
+            );
+            setSubjectFilter(parsed.subjectFilter);
+            setSelectedKeywords(new Set(parsed.selectedKeywords));
+            setMode(parsed.mode);
+            setPhase(parsed.phase);
+          } else {
+            sessionStorage.removeItem(STORAGE_KEY);
+          }
+        }
+      }
+    } catch {
+      sessionStorage.removeItem(STORAGE_KEY);
+    }
+    setRestored(true);
+  }, [loading, restored, questions]);
+
+  // 持續把複習進度存起來，切頁面回來可以接續
+  useEffect(() => {
+    if (!restored) return;
+    if (phase === "setup") {
+      sessionStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    const payload: StoredSession = {
+      phase,
+      deckIds: deck.map((q) => q.id),
+      index,
+      sessionStats,
+      wrongReviewIds: wrongReview.map((q) => q.id),
+      subjectFilter,
+      selectedKeywords: Array.from(selectedKeywords),
+      mode,
+    };
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }, [
+    restored,
+    phase,
+    deck,
+    index,
+    sessionStats,
+    wrongReview,
+    subjectFilter,
+    selectedKeywords,
+    mode,
+  ]);
 
   const subjects = PRESET_SUBJECTS;
 
@@ -298,6 +382,7 @@ export default function QuizReviewPage() {
     setIndex(0);
     setSelectedOption(null);
     setAnswered(false);
+    sessionStorage.removeItem(STORAGE_KEY);
   }, []);
 
   const current = phase === "reviewing" ? (deck[index] ?? null) : null;
@@ -756,6 +841,8 @@ export default function QuizReviewPage() {
           {current.questionId && (
             <Link
               href={`/practice/${current.questionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
               className="mt-6 text-xs text-stone-500 underline hover:text-stone-800"
             >
               檢視原題

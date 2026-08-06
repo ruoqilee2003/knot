@@ -3,6 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { shuffle } from "@/lib/shuffle";
 
+const STORAGE_KEY = "knot:common-subjects-session";
+
+type StoredSession = {
+  phase: Phase;
+  deckIds: string[];
+  index: number;
+  sessionStats: { correct: number; wrong: number; skipped: number };
+  wrongReviewIds: string[];
+  examFilter: string;
+  mode: Mode;
+};
+
 type CommonQuestion = {
   id: string;
   examName: string;
@@ -52,6 +64,7 @@ export default function CommonSubjectsPage() {
     skipped: 0,
   });
   const [wrongReview, setWrongReview] = useState<CommonQuestion[]>([]);
+  const [restored, setRestored] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -94,6 +107,73 @@ export default function CommonSubjectsPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // 還原上次未完成的複習進度（避免不小心切頁面就要重新開始）
+  useEffect(() => {
+    if (loading || restored) return;
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as StoredSession;
+        if (
+          parsed.phase !== "setup" &&
+          Array.isArray(parsed.deckIds) &&
+          parsed.deckIds.length > 0
+        ) {
+          const map = new Map(questions.map((q) => [q.id, q]));
+          const restoredDeck = parsed.deckIds
+            .map((id) => map.get(id))
+            .filter((q): q is CommonQuestion => Boolean(q));
+          if (restoredDeck.length === parsed.deckIds.length) {
+            setDeck(restoredDeck);
+            setIndex(Math.min(parsed.index, restoredDeck.length - 1));
+            setSessionStats(parsed.sessionStats);
+            setWrongReview(
+              parsed.wrongReviewIds
+                .map((id) => map.get(id))
+                .filter((q): q is CommonQuestion => Boolean(q))
+            );
+            setExamFilter(parsed.examFilter);
+            setMode(parsed.mode);
+            setPhase(parsed.phase);
+          } else {
+            sessionStorage.removeItem(STORAGE_KEY);
+          }
+        }
+      }
+    } catch {
+      sessionStorage.removeItem(STORAGE_KEY);
+    }
+    setRestored(true);
+  }, [loading, restored, questions]);
+
+  // 持續把複習進度存起來，切頁面回來可以接續
+  useEffect(() => {
+    if (!restored) return;
+    if (phase === "setup") {
+      sessionStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    const payload: StoredSession = {
+      phase,
+      deckIds: deck.map((q) => q.id),
+      index,
+      sessionStats,
+      wrongReviewIds: wrongReview.map((q) => q.id),
+      examFilter,
+      mode,
+    };
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }, [
+    restored,
+    phase,
+    deck,
+    index,
+    sessionStats,
+    wrongReview,
+    examFilter,
+    mode,
+  ]);
 
   const examNames = useMemo(() => {
     const set = new Set(questions.map((q) => q.examName).filter(Boolean));
@@ -173,6 +253,7 @@ export default function CommonSubjectsPage() {
     setIndex(0);
     setSelectedOption(null);
     setAnswered(false);
+    sessionStorage.removeItem(STORAGE_KEY);
   }, []);
 
   const current = phase === "reviewing" ? (deck[index] ?? null) : null;
