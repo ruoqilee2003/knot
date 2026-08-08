@@ -89,7 +89,9 @@ export default function SkeletonReviewPage() {
                 ? x.simpleExplanation
                 : undefined,
           }))
-          .filter((card) => card.blocks.length > 0);
+          .filter(
+            (card) => card.blocks.length > 0 || card.definition.trim().length > 0
+          );
         setCards(list);
       } catch (e) {
         if (!cancelled) {

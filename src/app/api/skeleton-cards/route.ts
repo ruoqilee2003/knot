@@ -67,7 +67,7 @@ export async function GET(request: Request) {
     } else {
       query = query.orderBy("createdAt", "desc");
     }
-    const snapshot = await query.limit(500).get();
+    const snapshot = await query.limit(5000).get();
     let cards = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...(doc.data() as Record<string, unknown>),
@@ -79,7 +79,7 @@ export async function GET(request: Request) {
             getCreatedAtMillis((b as { createdAt?: unknown }).createdAt) -
             getCreatedAtMillis((a as { createdAt?: unknown }).createdAt)
         )
-        .slice(0, 500);
+        .slice(0, 5000);
     }
 
     let filtered = cards;

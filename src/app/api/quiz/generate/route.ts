@@ -12,6 +12,8 @@ const FALLBACK_GEMINI_MODELS = [
 ];
 const HIGH_DEMAND_ERROR_MESSAGE = "系統忙碌中，請再試一次";
 const MAX_CARDS_PER_CALL = 15;
+const MAX_SKELETON_CARDS_PER_CALL = 3;
+const MAX_SKELETON_POINTS_PER_CALL = 20;
 
 type CardInput = {
   id?: string;
@@ -19,9 +21,31 @@ type CardInput = {
   back?: string;
 };
 
+type SkeletonPointInput = {
+  index?: number;
+  key?: string;
+  hint?: string;
+};
+
+type SkeletonBlockInput = {
+  index?: number;
+  label?: string;
+  note?: string;
+  points?: SkeletonPointInput[];
+};
+
+type SkeletonCardInput = {
+  id?: string;
+  topic?: string;
+  definition?: string;
+  conclusion?: string;
+  blocks?: SkeletonBlockInput[];
+};
+
 type GenerateBody = {
   subject?: string;
   cards?: CardInput[];
+  skeletonCards?: SkeletonCardInput[];
 };
 
 const QUIZ_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業命題助教，專長在以下考科：資通網路、資訊安全實務、資料庫應用、系統程式。
@@ -46,6 +70,80 @@ const QUIZ_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業命�
 5) explanation 需完整說明為什麼正解對、其他三個選項分別錯在哪裡，讓考生讀完就能理解整個概念，繁體中文，語句通順。
 6) 全部使用繁體中文，不要產生示範文或多餘說明文字。`;
 
+const SKELETON_QUIZ_SCHEMA_PROMPT = `你是台灣國家考試（申論題）的專業命題助教，專長在以下考科：資通網路、資訊安全實務、資料庫應用、系統程式。
+你會拿到幾張「骨架卡」（考生用來記憶申論題重點的知識卡，結構是：定義 → 分類架構＋逐點展開 → 結論）。
+請針對每張卡「指定要出題的逐點展開項目」（見卡片內容中以 [pointRef=x-y] 標示的項目）各出一題四選一選擇題，測驗考生是否記得該逐點項目的內容；可以參考同卡的定義／結論輔助鋪陳題幹，但正解與詳解要聚焦在該逐點項目本身。
+請輸出 **純 JSON**（不要 markdown、不要註解），格式固定如下：
+{
+  "questions": [
+    {
+      "cardId": "對應輸入的骨架卡 id，原樣照抄",
+      "pointRef": "對應輸入的 pointRef（例如 0-1），原樣照抄",
+      "question": "題幹（須清楚明確，讓考生知道在問哪個逐點項目）",
+      "options": ["選項A", "選項B", "選項C", "選項D"],
+      "correctIndex": 0,
+      "explanation": "詳解：說明正確選項為何正確、其餘選項為何錯誤或不夠精確"
+    }
+  ]
+}
+規則：
+1) 每個指定的 pointRef 都必須產生恰好一題，cardId 與 pointRef 要與輸入完全對應，不可遺漏或新增。
+2) 正確答案內容須忠實依據該逐點項目的重點與提示，不要偏離或加入卡片內容未提及的知識當作正解。
+3) 錯誤選項（干擾項）須與正解主題相關、具有一定的混淆性（例如同卡其他逐點項目、相似概念、常見誤解），不要出現明顯無關或荒謬的選項。
+4) correctIndex 為正確選項在 options 陣列中的索引（0~3），且務必打亂正確答案的位置，不要每題都放在同一個索引。
+5) explanation 需完整說明為什麼正解對、其他三個選項分別錯在哪裡，讓考生讀完就能理解整個概念，繁體中文，語句通順。
+6) 全部使用繁體中文，不要產生示範文或多餘說明文字。`;
+
+function buildSkeletonPrompt(subject: string, cards: SkeletonCardInput[]): {
+  promptText: string;
+  validPointRefs: Set<string>;
+  pointCount: number;
+} {
+  const validPointRefs = new Set<string>();
+  let pointCount = 0;
+
+  const cardsText = cards
+    .map((card, cardIdx) => {
+      const blocks = Array.isArray(card.blocks) ? card.blocks : [];
+      const blockLines = blocks
+        .map((block, blockIdx) => {
+          const points = Array.isArray(block.points) ? block.points : [];
+          const pointLines = points
+            .map((point, pointIdx) => {
+              const pointRef = `${blockIdx}-${pointIdx}`;
+              validPointRefs.add(`${card.id}::${pointRef}`);
+              pointCount += 1;
+              const hintText = point.hint ? `（提示：${point.hint}）` : "";
+              return `  - [pointRef=${pointRef}] ${point.key ?? ""}${hintText}`;
+            })
+            .join("\n");
+          const noteText = block.note ? `（${block.note}）` : "";
+          return `- 分類「${block.label ?? ""}」${noteText}\n${pointLines}`;
+        })
+        .join("\n");
+      const pointRefsForCard = (Array.isArray(card.blocks) ? card.blocks : [])
+        .flatMap((block, blockIdx) =>
+          (Array.isArray(block.points) ? block.points : []).map(
+            (_, pointIdx) => `${blockIdx}-${pointIdx}`
+          )
+        )
+        .join("、");
+      return `【骨架卡 ${cardIdx + 1}】id="${card.id}" 主題：${card.topic ?? ""}
+定義：${card.definition ?? ""}
+分類架構與逐點展開：
+${blockLines}
+結論：${card.conclusion ?? ""}
+請針對此卡的以下 pointRef 出題：${pointRefsForCard}`;
+    })
+    .join("\n\n");
+
+  const promptText = `${SKELETON_QUIZ_SCHEMA_PROMPT}
+
+${subject ? `科目：${subject}\n\n` : ""}${cardsText}`;
+
+  return { promptText, validPointRefs, pointCount };
+}
+
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -63,6 +161,9 @@ export async function POST(request: NextRequest) {
   }
 
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const isSkeletonMode =
+    Array.isArray(body.skeletonCards) && body.skeletonCards.length > 0;
+
   const cards = (Array.isArray(body.cards) ? body.cards : [])
     .map((c) => ({
       id: typeof c.id === "string" ? c.id.trim() : "",
@@ -72,7 +173,55 @@ export async function POST(request: NextRequest) {
     .filter((c) => c.id && c.front && c.back)
     .slice(0, MAX_CARDS_PER_CALL);
 
-  if (cards.length === 0) {
+  const skeletonCards = (
+    isSkeletonMode ? (body.skeletonCards as SkeletonCardInput[]) : []
+  )
+    .map((c) => ({
+      id: typeof c.id === "string" ? c.id.trim() : "",
+      topic: typeof c.topic === "string" ? c.topic.trim() : "",
+      definition: typeof c.definition === "string" ? c.definition.trim() : "",
+      conclusion: typeof c.conclusion === "string" ? c.conclusion.trim() : "",
+      blocks: Array.isArray(c.blocks)
+        ? c.blocks.map((block, blockIdx) => ({
+            index: blockIdx,
+            label: typeof block.label === "string" ? block.label.trim() : "",
+            note: typeof block.note === "string" ? block.note.trim() : "",
+            points: Array.isArray(block.points)
+              ? block.points.map((point) => ({
+                  key: typeof point.key === "string" ? point.key.trim() : "",
+                  hint: typeof point.hint === "string" ? point.hint.trim() : "",
+                }))
+              : [],
+          }))
+        : [],
+    }))
+    .filter((c) => c.id && c.blocks.some((b) => b.points.length > 0))
+    .slice(0, MAX_SKELETON_CARDS_PER_CALL);
+
+  if (isSkeletonMode) {
+    // 避免一次呼叫的逐點題目數超過上限，超過就從後面的卡開始砍掉整卡
+    let total = 0;
+    let cutoff = skeletonCards.length;
+    for (let i = 0; i < skeletonCards.length; i++) {
+      const count = skeletonCards[i]!.blocks.reduce(
+        (sum, b) => sum + b.points.length,
+        0
+      );
+      if (total + count > MAX_SKELETON_POINTS_PER_CALL && i > 0) {
+        cutoff = i;
+        break;
+      }
+      total += count;
+    }
+    skeletonCards.splice(cutoff);
+
+    if (skeletonCards.length === 0) {
+      return NextResponse.json(
+        { error: "缺少可用的骨架卡逐點內容（skeletonCards）" },
+        { status: 400 }
+      );
+    }
+  } else if (cards.length === 0) {
     return NextResponse.json({ error: "缺少可用的字卡（cards）" }, { status: 400 });
   }
 
@@ -83,7 +232,13 @@ export async function POST(request: NextRequest) {
     .map((c, i) => `${i + 1}. id="${c.id}"\n正面：${c.front}\n背面：${c.back}`)
     .join("\n\n");
 
-  const promptText = `${QUIZ_SCHEMA_PROMPT}
+  const skeletonPromptData = isSkeletonMode
+    ? buildSkeletonPrompt(subject, skeletonCards)
+    : null;
+
+  const promptText = isSkeletonMode
+    ? skeletonPromptData!.promptText
+    : `${QUIZ_SCHEMA_PROMPT}
 
 ${subject ? `科目：${subject}\n\n` : ""}【字卡清單】（共 ${cards.length} 張，請每張各出一題）
 ${cardsListText}`;
@@ -139,12 +294,15 @@ ${cardsListText}`;
 
     const parsed = JSON.parse(text) as { questions?: unknown };
     const validCardIds = new Set(cards.map((c) => c.id));
+    const validPointRefs = skeletonPromptData?.validPointRefs ?? new Set<string>();
 
     const questions = (Array.isArray(parsed.questions) ? parsed.questions : [])
       .map((item) => {
         if (typeof item !== "object" || item == null) return null;
         const obj = item as Record<string, unknown>;
         const cardId = typeof obj.cardId === "string" ? obj.cardId.trim() : "";
+        const pointRef =
+          typeof obj.pointRef === "string" ? obj.pointRef.trim() : "";
         const question =
           typeof obj.question === "string" ? obj.question.trim() : "";
         const options = Array.isArray(obj.options)
@@ -156,8 +314,11 @@ ${cardsListText}`;
           typeof obj.correctIndex === "number" ? obj.correctIndex : -1;
         const explanation =
           typeof obj.explanation === "string" ? obj.explanation.trim() : "";
+        const cardValid = isSkeletonMode
+          ? validPointRefs.has(`${cardId}::${pointRef}`)
+          : validCardIds.has(cardId);
         if (
-          !validCardIds.has(cardId) ||
+          !cardValid ||
           !question ||
           options.length !== 4 ||
           correctIndex < 0 ||
@@ -166,7 +327,9 @@ ${cardsListText}`;
         ) {
           return null;
         }
-        return { cardId, question, options, correctIndex, explanation };
+        return isSkeletonMode
+          ? { cardId, pointRef, question, options, correctIndex, explanation }
+          : { cardId, question, options, correctIndex, explanation };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);
 

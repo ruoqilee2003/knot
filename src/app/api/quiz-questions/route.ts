@@ -6,6 +6,8 @@ export const runtime = "nodejs";
 
 type QuizQuestionInput = {
   cardId?: string;
+  pointRef?: string | null;
+  sourceType?: "flashcard" | "skeleton";
   questionId?: string | null;
   subject?: string;
   keywords?: string[];
@@ -100,18 +102,27 @@ export async function POST(request: Request) {
         typeof item.correctIndex === "number" ? item.correctIndex : -1;
       const explanation =
         typeof item.explanation === "string" ? item.explanation.trim() : "";
+      const sourceType = item.sourceType === "skeleton" ? "skeleton" : "flashcard";
+      const pointRef =
+        sourceType === "skeleton" && typeof item.pointRef === "string"
+          ? item.pointRef.trim()
+          : "";
       if (
         !cardId ||
         !question ||
         options.length !== 4 ||
         correctIndex < 0 ||
         correctIndex > 3 ||
-        !explanation
+        !explanation ||
+        (sourceType === "skeleton" && !pointRef)
       ) {
         return null;
       }
       return {
         cardId,
+        pointRef,
+        sourceType,
+        dedupeKey: `${cardId}::${pointRef}`,
         questionId:
           typeof item.questionId === "string" && item.questionId
             ? item.questionId
@@ -141,11 +152,18 @@ export async function POST(request: Request) {
       .collection("quizQuestions")
       .where("cardId", "in", cardIds.slice(0, 30))
       .get();
-    const existingCardIds = new Set(
-      existingSnapshot.docs.map((doc) => (doc.data() as { cardId?: string }).cardId)
+    // 骨架卡一張卡可以有多題（每個 pointRef 各一題），去重要用 cardId+pointRef 複合鍵；
+    // 舊資料／字卡沒有 pointRef，維持原本「同 cardId 只留一題」的行為
+    const existingDedupeKeys = new Set(
+      existingSnapshot.docs.map((doc) => {
+        const data = doc.data() as { cardId?: string; pointRef?: string };
+        return `${data.cardId ?? ""}::${data.pointRef ?? ""}`;
+      })
     );
 
-    const toCreate = normalized.filter((q) => !existingCardIds.has(q.cardId));
+    const toCreate = normalized.filter(
+      (q) => !existingDedupeKeys.has(q.dedupeKey)
+    );
 
     if (toCreate.length === 0) {
       return NextResponse.json(
@@ -156,7 +174,8 @@ export async function POST(request: Request) {
 
     const batch = adminDb.batch();
     const created: string[] = [];
-    for (const q of toCreate) {
+    for (const { dedupeKey, ...q } of toCreate) {
+      void dedupeKey;
       const ref = adminDb.collection("quizQuestions").doc();
       created.push(ref.id);
       batch.set(ref, {

@@ -30,6 +30,8 @@ type SourceCard = {
 type QuizQuestion = {
   id: string;
   cardId: string;
+  pointRef: string;
+  sourceType: "flashcard" | "skeleton";
   questionId: string | null;
   subject: string;
   keywords: string[];
@@ -122,6 +124,8 @@ export default function QuizReviewPage() {
         .map((x) => ({
           id: String(x.id ?? ""),
           cardId: String(x.cardId ?? ""),
+          pointRef: typeof x.pointRef === "string" ? x.pointRef : "",
+          sourceType: x.sourceType === "skeleton" ? "skeleton" : "flashcard",
           questionId: x.questionId ? String(x.questionId) : null,
           subject: String(x.subject ?? ""),
           keywords: Array.isArray(x.keywords)
@@ -141,7 +145,7 @@ export default function QuizReviewPage() {
           wrongCount: typeof x.wrongCount === "number" ? x.wrongCount : 0,
           marked: x.marked === true,
         }))
-        .filter((q) => q.cardId && q.question && q.options.length === 4);
+        .filter((q) => q.cardId && q.question && q.options.length === 4) as QuizQuestion[];
 
       setCards(cardList);
       setQuestions(quizList);
@@ -267,34 +271,59 @@ export default function QuizReviewPage() {
     return pool;
   }, [cards, subjectFilter, selectedKeywords]);
 
-  const matchedCardIds = useMemo(
-    () => new Set(matchedCards.map((c) => c.id)),
-    [matchedCards]
-  );
-
   const cardsWithoutQuiz = useMemo(() => {
-    const existingCardIds = new Set(questions.map((q) => q.cardId));
+    const existingCardIds = new Set(
+      questions.filter((q) => q.sourceType === "flashcard").map((q) => q.cardId)
+    );
     return matchedCards.filter((c) => !existingCardIds.has(c.id));
   }, [matchedCards, questions]);
 
   const matchedQuestions = useMemo(() => {
-    let pool = questions.filter((q) => matchedCardIds.has(q.cardId));
+    let pool = questions.filter((q) => {
+      if (subjectFilter !== "all" && !subjectsMatch(q.subject, subjectFilter)) {
+        return false;
+      }
+      if (
+        selectedKeywords.size > 0 &&
+        !q.keywords.some((keyword) => selectedKeywords.has(keyword))
+      ) {
+        return false;
+      }
+      return true;
+    });
     if (mode === "wrong") {
       pool = pool.filter(isWeakQuestion);
     } else if (mode === "marked") {
       pool = pool.filter((q) => q.marked);
     }
     return pool;
-  }, [questions, matchedCardIds, mode]);
+  }, [questions, subjectFilter, selectedKeywords, mode]);
+
+  const inScopeQuestions = useMemo(
+    () =>
+      questions.filter((q) => {
+        if (subjectFilter !== "all" && !subjectsMatch(q.subject, subjectFilter)) {
+          return false;
+        }
+        if (
+          selectedKeywords.size > 0 &&
+          !q.keywords.some((keyword) => selectedKeywords.has(keyword))
+        ) {
+          return false;
+        }
+        return true;
+      }),
+    [questions, subjectFilter, selectedKeywords]
+  );
 
   const weakCount = useMemo(
-    () => questions.filter((q) => matchedCardIds.has(q.cardId) && isWeakQuestion(q)).length,
-    [questions, matchedCardIds]
+    () => inScopeQuestions.filter(isWeakQuestion).length,
+    [inScopeQuestions]
   );
 
   const markedCount = useMemo(
-    () => questions.filter((q) => matchedCardIds.has(q.cardId) && q.marked).length,
-    [questions, matchedCardIds]
+    () => inScopeQuestions.filter((q) => q.marked).length,
+    [inScopeQuestions]
   );
 
   const toggleKeyword = useCallback((keyword: string) => {
@@ -336,6 +365,7 @@ export default function QuizReviewPage() {
         const card = cardMap.get(cardId);
         return {
           cardId,
+          sourceType: "flashcard" as const,
           questionId: card?.questionId ?? null,
           subject: card?.subject ?? subjectFilter,
           keywords: card?.keywords ?? [],
@@ -838,15 +868,26 @@ export default function QuizReviewPage() {
             )}
           </div>
 
-          {current.questionId && (
+          {current.sourceType === "skeleton" ? (
             <Link
-              href={`/practice/${current.questionId}`}
+              href={`/skeleton-cards/${current.cardId}`}
               target="_blank"
               rel="noopener noreferrer"
               className="mt-6 text-xs text-stone-500 underline hover:text-stone-800"
             >
-              檢視原題
+              檢視骨架卡
             </Link>
+          ) : (
+            current.questionId && (
+              <Link
+                href={`/practice/${current.questionId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-6 text-xs text-stone-500 underline hover:text-stone-800"
+              >
+                檢視原題
+              </Link>
+            )
           )}
         </div>
       )}
